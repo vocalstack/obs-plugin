@@ -69,8 +69,9 @@ void WebSocket::onConnected()
 	for (auto &b : nonce)
 		b = char(QRandomGenerator::system()->bounded(256));
 	const QByteArray key = nonce.toBase64();
-	accept = QCryptographicHash::hash(key + "258EAFA5-E914-47DA-95CA-C5AB0DC11B85", QCryptographicHash::Sha1)
-			 .toBase64();
+	QByteArray proof = key;
+	proof.append("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+	accept = QCryptographicHash::hash(proof, QCryptographicHash::Sha1).toBase64();
 
 	QByteArray req = "GET " + url.path(QUrl::FullyEncoded).toLatin1();
 	if (url.hasQuery())
@@ -103,14 +104,15 @@ void WebSocket::onReadyRead()
 			fail(tr("The server refused the caption feed (HTTP %1)").arg(QString::fromLatin1(status.value(1))));
 			return;
 		}
-		bool accepted = false;
+		QByteArray got;
 		for (const QByteArray &line : lines) {
 			const int colon = line.indexOf(':');
 			if (colon > 0 && line.left(colon).trimmed().toLower() == "sec-websocket-accept")
-				accepted = line.mid(colon + 1).trimmed() == accept;
+				got = line.mid(colon + 1).trimmed();
 		}
-		if (!accepted) {
-			fail(tr("The server's WebSocket answer did not match"));
+		if (got != accept) {
+			fail(tr("The server's WebSocket answer did not match (%1, want %2)")
+				     .arg(QString::fromLatin1(got), QString::fromLatin1(accept)));
 			return;
 		}
 		state = State::Open;

@@ -4,15 +4,20 @@
 #include "caption-overlay.hpp"
 #include "connect-login.hpp"
 
+#include <plugin-support.h>
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QEvent>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -44,9 +49,14 @@ Dock::Dock(QWidget *parent)
 	connect(api, &Api::unauthorized, this,
 		[this]() { signOut(tr("VocalStack no longer accepts this sign-in. Sign in again.")); });
 	connect(session, &Session::stateChanged, this, &Dock::onState);
-	connect(session, &Session::status, this,
-		[this](const QString &text, bool error) { setStatus(sessionStatus, text, error); });
+	connect(session, &Session::status, this, [this](const QString &text, bool error) {
+		if (error)
+			obs_log(LOG_WARNING, "%s", text.toUtf8().constData());
+		setStatus(sessionStatus, text, error);
+	});
 	connect(session, &Session::caption, this, [this](const QString &text) {
+		if (!qEnvironmentVariableIsEmpty("VOCALSTACK_DEBUG"))
+			obs_log(LOG_INFO, "caption: %s", text.toUtf8().constData());
 		if (overlay && settings.showCaptions)
 			overlay->setCaption(text);
 	});
@@ -119,7 +129,14 @@ QWidget *Dock::buildSignedIn()
 	refresh->setText("↻");
 	refresh->setToolTip(tr("Reload the broadcasts"));
 	connect(refresh, &QToolButton::clicked, this, &Dock::loadBroadcasts);
+	// A Connect key that reaches only what it creates sees no broadcast
+	// made elsewhere: it can make its own.
+	auto *add = new QToolButton;
+	add->setText("+");
+	add->setToolTip(tr("New broadcast"));
+	connect(add, &QToolButton::clicked, this, &Dock::newBroadcast);
 	broadcastRow->addWidget(broadcastBox, 1);
+	broadcastRow->addWidget(add);
 	broadcastRow->addWidget(refresh);
 	form->addRow(tr("Broadcast"), broadcastRow);
 	connect(broadcastBox, &QComboBox::activated, this, [this]() {
@@ -165,12 +182,7 @@ QWidget *Dock::buildSignedIn()
 
 	startButton = new QPushButton(tr("Start"));
 	startButton->setMinimumHeight(32);
-	connect(startButton, &QPushButton::clicked, this, [this]() {
-		if (session->state() == Session::State::Idle)
-			session->start();
-		else
-			session->stop();
-	});
+	connect(startButton, &QPushButton::clicked, this, &Dock::toggle);
 	v->addWidget(startButton);
 
 	sessionStatus = new QLabel;
@@ -306,6 +318,26 @@ void Dock::loadBroadcasts()
 	});
 }
 
+void Dock::newBroadcast()
+{
+	bool ok = false;
+	const QString name = QInputDialog::getText(this, tr("New broadcast"), tr("Name"), QLineEdit::Normal,
+						   QString(), &ok)
+				     .trimmed();
+	if (!ok || name.isEmpty())
+		return;
+	api->post("/v1/broadcasts", QJsonObject{{"name", name}},
+		  [this](int, const QJsonDocument &doc, const QString &error) {
+			  if (!error.isEmpty()) {
+				  setStatus(sessionStatus, tr("Could not create the broadcast: %1").arg(error), true);
+				  return;
+			  }
+			  settings.broadcastId = doc.object().value("id").toString();
+			  settings.save();
+			  loadBroadcasts();
+		  });
+}
+
 void Dock::onState(Session::State s)
 {
 	const bool idle = s == Session::State::Idle;
@@ -314,6 +346,16 @@ void Dock::onState(Session::State s)
 	broadcastBox->setEnabled(idle);
 	spokenBox->setEnabled(idle);
 	sendBox->setEnabled(idle);
+}
+
+void Dock::toggle()
+{
+	if (settings.apiKey.isEmpty())
+		return;
+	if (session->state() == Session::State::Idle)
+		session->start();
+	else
+		session->stop();
 }
 
 void Dock::obsStreamingStarted()
@@ -330,6 +372,31 @@ void Dock::obsStreamingStopped()
 
 void Dock::shutdown()
 {
-	session->stop();
 	login->cancel();
+	session->stop();
+}
+
+// Closing OBS while live: the close waits (at most a few seconds) for the
+// recording to stop, or it would stay live until VocalStack noticed the
+// stream was gone. OBS holds its own close the same way.
+void Dock::watchClose(QWidget *mainWindow)
+{
+	mainWindow->installEventFilter(this);
+}
+
+bool Dock::eventFilter(QObject *watched, QEvent *event)
+{
+	if (event->type() != QEvent::Close || session->state() == Session::State::Idle || closeHeld)
+		return QWidget::eventFilter(watched, event);
+	closeHeld = true;
+	event->ignore();
+	auto *mainWindow = static_cast<QWidget *>(watched);
+	auto closeAgain = [mainWindow]() { QMetaObject::invokeMethod(mainWindow, "close", Qt::QueuedConnection); };
+	QTimer::singleShot(5000, this, closeAgain);
+	connect(session, &Session::stateChanged, this, [closeAgain](Session::State s) {
+		if (s == Session::State::Idle)
+			closeAgain();
+	});
+	session->stop();
+	return true;
 }

@@ -28,7 +28,14 @@ public:
 	void obsStreamingStopped();
 	// OBS is closing: end the session.
 	void shutdown();
+	void watchClose(QWidget *mainWindow);
 	void setOverlay(CaptionOverlay *overlay);
+	// Start when idle, else stop: the dock's button, and the
+	// "VocalStack: Start/Stop" hotkey.
+	void toggle();
+
+protected:
+	bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
 	QWidget *buildSignedOut();
@@ -39,6 +46,7 @@ private:
 	void useKey();
 	void loadLists();
 	void loadBroadcasts();
+	void newBroadcast();
 	void onState(Session::State s);
 	void setStatus(QLabel *label, const QString &text, bool error);
 
@@ -47,6 +55,7 @@ private:
 	Session *session;
 	ConnectLogin *login;
 	CaptionOverlay *overlay = nullptr;
+	bool closeHeld = false;
 
 	QStackedWidget *pages;
 	// Signed out.
