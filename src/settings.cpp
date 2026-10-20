@@ -38,6 +38,7 @@ Settings Settings::load()
 	s.sendVideo = obs_data_get_bool(d, "sendVideo");
 	s.followStreaming = obs_data_get_bool(d, "followStreaming");
 	s.showCaptions = obs_data_get_bool(d, "showCaptions");
+	s.dockShown = obs_data_get_bool(d, "dockShown");
 	return s;
 }
 
@@ -62,5 +63,6 @@ void Settings::save() const
 	obs_data_set_bool(d, "sendVideo", sendVideo);
 	obs_data_set_bool(d, "followStreaming", followStreaming);
 	obs_data_set_bool(d, "showCaptions", showCaptions);
+	obs_data_set_bool(d, "dockShown", dockShown);
 	obs_data_save_json_safe(d, path().toUtf8().constData(), "tmp", "bak");
 }

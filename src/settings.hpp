@@ -21,6 +21,8 @@ struct Settings {
 	bool sendVideo = false;
 	bool followStreaming = true;
 	bool showCaptions = true;
+	// The dock was put on screen once; after that OBS keeps where it is.
+	bool dockShown = false;
 
 	static Settings load();
 	void save() const;

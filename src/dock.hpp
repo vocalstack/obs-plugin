@@ -12,6 +12,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QMainWindow;
 class QPushButton;
 class QStackedWidget;
 
@@ -29,6 +30,9 @@ public:
 	// OBS is closing: end the session.
 	void shutdown();
 	void watchClose(QWidget *mainWindow);
+	// OBS adds a plugin's dock hidden: on the first run, put it on the
+	// right of the main window.
+	void showFirstTime(QMainWindow *mainWindow);
 	void setOverlay(CaptionOverlay *overlay);
 	// Start when idle, else stop: the dock's button, and the
 	// "VocalStack: Start/Stop" hotkey.

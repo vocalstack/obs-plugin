@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 #include <obs.hpp>
 
+#include <QMainWindow>
 #include <QMetaObject>
 #include <QWidget>
 
@@ -59,7 +60,9 @@ static void on_frontend_event(enum obs_frontend_event event, void *)
 		overlay = CaptionOverlay::attach();
 		if (dock) {
 			dock->setOverlay(overlay);
-			dock->watchClose(static_cast<QWidget *>(obs_frontend_get_main_window()));
+			auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+			dock->watchClose(main);
+			dock->showFirstTime(main);
 		}
 		break;
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:

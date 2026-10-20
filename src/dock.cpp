@@ -8,6 +8,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDockWidget>
 #include <QFormLayout>
 #include <QEvent>
 #include <QHBoxLayout>
@@ -15,6 +16,7 @@
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMainWindow>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QTimer>
@@ -379,6 +381,19 @@ void Dock::shutdown()
 // Closing OBS while live: the close waits (at most a few seconds) for the
 // recording to stop, or it would stay live until VocalStack noticed the
 // stream was gone. OBS holds its own close the same way.
+void Dock::showFirstTime(QMainWindow *mainWindow)
+{
+	if (settings.dockShown)
+		return;
+	if (auto *dw = qobject_cast<QDockWidget *>(parentWidget())) {
+		dw->setFloating(false);
+		mainWindow->addDockWidget(Qt::RightDockWidgetArea, dw);
+		dw->show();
+	}
+	settings.dockShown = true;
+	settings.save();
+}
+
 void Dock::watchClose(QWidget *mainWindow)
 {
 	mainWindow->installEventFilter(this);
