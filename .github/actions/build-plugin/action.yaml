@@ -53,7 +53,7 @@ runs:
         echo ::group::Install Dependencies
         # zsh from apt: no Homebrew needed (and some runner images keep it read-only).
         sudo apt-get update -qq
-        sudo apt-get install -y -qq zsh
+        sudo apt-get install -y -qq zsh libcurl4-openssl-dev
         echo ::endgroup::
 
     - name: Run Ubuntu Build

@@ -5,6 +5,7 @@
 #include <QCryptographicHash>
 #include <QDesktopServices>
 #include <QHostInfo>
+#include <QPointer>
 #include <QRandomGenerator>
 #include <QTcpSocket>
 #include <QUrl>
@@ -78,17 +79,24 @@ void ConnectLogin::onConnection()
 		connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
 			if (!socket->canReadLine())
 				return;
+			// The request line is all it takes; the headers after it are not read.
+			disconnect(socket, &QTcpSocket::readyRead, this, nullptr);
 			answer(socket, socket->readLine().trimmed());
 		});
 	}
 }
 
-static void reply_page(QTcpSocket *socket, int status, const QString &message)
+// `closeTab`: the page tries to close itself. A browser lets it only where
+// a script opened the tab, so the message stays for the rest.
+static void reply_page(QTcpSocket *socket, int status, const QString &message, bool closeTab = false)
 {
+	if (!socket)
+		return;
 	const QByteArray html = QStringLiteral("<!doctype html><meta charset=utf-8><title>VocalStack</title>"
 					       "<body style=\"font:16px system-ui;margin:3em;text-align:center\">"
-					       "<p>%1</p></body>")
-					.arg(message.toHtmlEscaped())
+					       "<p>%1</p>%2</body>")
+					.arg(message.toHtmlEscaped(),
+					     closeTab ? "<script>setTimeout(function(){window.close()},500)</script>" : "")
 					.toUtf8();
 	socket->write(QStringLiteral("HTTP/1.1 %1 %2\r\nContent-Type: text/html; charset=utf-8\r\n"
 				     "Content-Length: %3\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n")
@@ -120,7 +128,6 @@ void ConnectLogin::answer(QTcpSocket *socket, const QByteArray &requestLine)
 		return;
 	}
 	const QString code = q.queryItemValue("code");
-	reply_page(socket, 200, tr("Signed in. You can close this tab and go back to OBS."));
 
 	QUrlQuery form;
 	form.addQueryItem("grant_type", "authorization_code");
@@ -128,11 +135,14 @@ void ConnectLogin::answer(QTcpSocket *socket, const QByteArray &requestLine)
 	form.addQueryItem("code_verifier", verifier);
 	form.addQueryItem("redirect_uri", redirectUri);
 	server.close();
-	api->postForm("/v1/connect/token", form, [this](int, const QJsonDocument &body, const QString &error) {
+	// The page answers once the code is redeemed, so it says how it went.
+	api->postForm("/v1/connect/token", form, [this, page = QPointer<QTcpSocket>(socket)](int, const QJsonDocument &body, const QString &error) {
 		if (!error.isEmpty()) {
+			reply_page(page, 200, tr("OBS could not finish signing in: %1").arg(error));
 			finish({}, {}, error);
 			return;
 		}
+		reply_page(page, 200, tr("Signed in. You can close this tab and go back to OBS."), true);
 		const QJsonObject o = body.object();
 		finish(o.value("access_token").toString(), o.value("account").toObject().value("name").toString(), {});
 	});

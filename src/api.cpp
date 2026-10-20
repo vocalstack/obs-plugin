@@ -2,8 +2,9 @@
 
 #include <plugin-support.h>
 
-#include <QNetworkReply>
-#include <QNetworkRequest>
+#include "net.hpp"
+
+#include <QPointer>
 
 static QString from_env(const char *name, const char *fallback)
 {
@@ -60,33 +61,58 @@ static QString error_text(int status, const QJsonDocument &doc)
 	return QStringLiteral("VocalStack answered %1").arg(status);
 }
 
+static size_t collect(char *data, size_t size, size_t n, void *into)
+{
+	static_cast<QByteArray *>(into)->append(data, qsizetype(size * n));
+	return size * n;
+}
+
 void Api::send(const QString &method, const QString &path, const QByteArray *body, const char *contentType,
 	       bool withKey, Done done)
 {
-	QNetworkRequest req(QUrl(api + path));
-	req.setRawHeader("Accept", "application/json");
-	req.setRawHeader("User-Agent", QByteArray("vocalstack-obs/") + PLUGIN_VERSION);
+	CURL *easy = curl_easy_init();
+	auto *received = new QByteArray;
+	struct curl_slist *headers = curl_slist_append(nullptr, "Accept: application/json");
 	if (contentType)
-		req.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
+		headers = curl_slist_append(headers, (QByteArray("Content-Type: ") + contentType).constData());
 	if (withKey && !apiKey.isEmpty())
-		req.setRawHeader("Authorization", "Bearer " + apiKey.toUtf8());
-	req.setTransferTimeout(20000);
+		headers = curl_slist_append(headers, ("Authorization: Bearer " + apiKey.toUtf8()).constData());
 
-	QNetworkReply *reply = net.sendCustomRequest(req, method.toLatin1(), body ? *body : QByteArray());
-	connect(reply, &QNetworkReply::finished, this, [this, reply, withKey, done = std::move(done)]() {
-		reply->deleteLater();
-		const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-		const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-		if (status == 0) {
-			done(0, doc, reply->errorString());
+	curl_easy_setopt(easy, CURLOPT_URL, (api + path).toUtf8().constData());
+	curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
+	curl_easy_setopt(easy, CURLOPT_USERAGENT, (QByteArray("vocalstack-obs/") + PLUGIN_VERSION).constData());
+	curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, 20000L);
+	curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
+	curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, collect);
+	curl_easy_setopt(easy, CURLOPT_WRITEDATA, received);
+	if (method != "GET") {
+		// A body always, if empty: PUT and DELETE then send Content-Length: 0.
+		curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE, long(body ? body->size() : 0));
+		curl_easy_setopt(easy, CURLOPT_COPYPOSTFIELDS, body ? body->constData() : "");
+		if (method != "POST")
+			curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, method.toLatin1().constData());
+	}
+
+	QPointer<Api> self(this);
+	Net::instance().add(easy, [self, easy, headers, received, withKey, done = std::move(done)](CURLcode result) {
+		long status = 0;
+		curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+		const QJsonDocument doc = QJsonDocument::fromJson(*received);
+		curl_easy_cleanup(easy);
+		curl_slist_free_all(headers);
+		delete received;
+		if (!self)
+			return;
+		if (result != CURLE_OK) {
+			done(0, doc, QString::fromUtf8(curl_easy_strerror(result)));
 			return;
 		}
 		if (status >= 400) {
 			if (status == 401 && withKey)
-				emit unauthorized();
-			done(status, doc, error_text(status, doc));
+				emit self->unauthorized();
+			done(int(status), doc, error_text(int(status), doc));
 			return;
 		}
-		done(status, doc, QString());
+		done(int(status), doc, QString());
 	});
 }

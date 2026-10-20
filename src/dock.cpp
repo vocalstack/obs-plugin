@@ -43,9 +43,12 @@ Dock::Dock(QWidget *parent)
 	connect(login, &ConnectLogin::finished, this,
 		[this](const QString &key, const QString &account, const QString &error) {
 			signInButton->setEnabled(true);
-			if (!key.isEmpty())
+			if (!key.isEmpty()) {
 				signedIn(key, account);
-			else
+				// Back from the browser: OBS comes to the front.
+				window()->raise();
+				window()->activateWindow();
+			} else
 				setStatus(signInStatus, error, !error.isEmpty());
 		});
 	connect(api, &Api::unauthorized, this,

@@ -2,7 +2,6 @@
 
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QNetworkAccessManager>
 #include <QObject>
 #include <QUrlQuery>
 
@@ -43,6 +42,5 @@ private:
 	void send(const QString &method, const QString &path, const QByteArray *body, const char *contentType,
 		  bool withKey, Done done);
 
-	QNetworkAccessManager net;
 	QString api, app, apiKey;
 };

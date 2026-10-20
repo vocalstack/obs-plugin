@@ -4,18 +4,22 @@
 #include <QList>
 #include <QObject>
 #include <QPair>
-#include <QSslSocket>
 #include <QTimer>
 #include <QUrl>
 
-// A WebSocket client (RFC 6455) for the caption feed, on Qt's TLS socket:
-// OBS ships QtNetwork but not QtWebSockets. Text frames in, text frames
+#include <curl/curl.h>
+
+class QSocketNotifier;
+
+// A WebSocket client (RFC 6455) for the caption feed. libcurl makes the
+// connection (TLS included, see net.hpp); OBS ships no QtWebSockets. Text frames in, text frames
 // out, pings answered and sent; no extensions.
 class WebSocket : public QObject {
 	Q_OBJECT
 
 public:
 	explicit WebSocket(QObject *parent = nullptr);
+	~WebSocket() override;
 
 	// `wss://` or `ws://`; `headers` ride the opening handshake.
 	void open(const QUrl &url, const QList<QPair<QByteArray, QByteArray>> &headers);
@@ -34,11 +38,18 @@ private:
 
 	void onConnected();
 	void onReadyRead();
+	void write(const QByteArray &data);
+	void flush();
+	void disconnected();
+	// Drops the connection without a word.
+	void teardown();
 	void readFrames();
 	void sendFrame(quint8 opcode, const QByteArray &payload);
 	void fail(const QString &reason);
 
-	QSslSocket socket;
+	CURL *easy = nullptr;
+	QSocketNotifier *readable = nullptr, *writable = nullptr;
+	QByteArray outgoing;
 	QTimer ping;
 	State state = State::Closed;
 	QUrl url;

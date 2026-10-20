@@ -1,33 +1,23 @@
 #include "websocket.hpp"
 
+#include "net.hpp"
+
 #include <QCryptographicHash>
 #include <QRandomGenerator>
+#include <QSocketNotifier>
 
 // Larger frames than this are refused: captions are a few hundred bytes.
 static const quint64 MAX_FRAME = 4 * 1024 * 1024;
 
 WebSocket::WebSocket(QObject *parent) : QObject(parent)
 {
-	connect(&socket, &QSslSocket::encrypted, this, &WebSocket::onConnected);
-	connect(&socket, &QSslSocket::connected, this, [this]() {
-		if (url.scheme() == "ws")
-			onConnected();
-	});
-	connect(&socket, &QSslSocket::readyRead, this, &WebSocket::onReadyRead);
-	connect(&socket, &QSslSocket::disconnected, this, [this]() {
-		if (state == State::Closed) // fail() already said why
-			return;
-		const bool wanted = closing;
-		state = State::Closed;
-		ping.stop();
-		emit closed(wanted ? QString() : tr("The connection closed"));
-	});
-	connect(&socket, &QSslSocket::errorOccurred, this, [this](QAbstractSocket::SocketError e) {
-		if (e != QAbstractSocket::RemoteHostClosedError)
-			fail(socket.errorString());
-	});
 	ping.setInterval(25000);
 	connect(&ping, &QTimer::timeout, this, [this]() { sendFrame(0x9, QByteArray()); });
+}
+
+WebSocket::~WebSocket()
+{
+	teardown();
 }
 
 void WebSocket::open(const QUrl &url_, const QList<QPair<QByteArray, QByteArray>> &headers_)
@@ -38,13 +28,43 @@ void WebSocket::open(const QUrl &url_, const QList<QPair<QByteArray, QByteArray>
 	closing = false;
 	buffer.clear();
 	message.clear();
+	outgoing.clear();
 	state = State::Handshake;
 	const bool tls = url.scheme() == "wss";
-	const quint16 port = quint16(url.port(tls ? 443 : 80));
-	if (tls)
-		socket.connectToHostEncrypted(url.host(), port);
-	else
-		socket.connectToHost(url.host(), port);
+	const int port = url.port(tls ? 443 : 80);
+
+	// CONNECT_ONLY: curl connects (and shakes TLS hands), then the bytes
+	// are ours through curl_easy_send/recv.
+	easy = curl_easy_init();
+	const QByteArray target = (tls ? "https://" : "http://") + url.host().toUtf8() + ":" + QByteArray::number(port) + "/";
+	curl_easy_setopt(easy, CURLOPT_URL, target.constData());
+	curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 1L);
+	// HTTP/1.1 only: if TLS agreed on HTTP/2, curl would frame our bytes
+	// as HTTP/2.
+	curl_easy_setopt(easy, CURLOPT_HTTP_VERSION, long(CURL_HTTP_VERSION_1_1));
+	curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, 15000L);
+	curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
+	Net::instance().add(
+		easy,
+		[this](CURLcode result) {
+			if (result != CURLE_OK) {
+				fail(QString::fromUtf8(curl_easy_strerror(result)));
+				return;
+			}
+			curl_socket_t fd = CURL_SOCKET_BAD;
+			curl_easy_getinfo(easy, CURLINFO_ACTIVESOCKET, &fd);
+			if (fd == CURL_SOCKET_BAD) {
+				fail(tr("The connection closed"));
+				return;
+			}
+			readable = new QSocketNotifier(qintptr(fd), QSocketNotifier::Read, this);
+			connect(readable, &QSocketNotifier::activated, this, &WebSocket::onReadyRead);
+			writable = new QSocketNotifier(qintptr(fd), QSocketNotifier::Write, this);
+			writable->setEnabled(false);
+			connect(writable, &QSocketNotifier::activated, this, &WebSocket::flush);
+			onConnected();
+		},
+		true);
 }
 
 void WebSocket::close()
@@ -54,7 +74,56 @@ void WebSocket::close()
 	closing = true;
 	if (state == State::Open)
 		sendFrame(0x8, QByteArray::fromHex("03e8")); // 1000, normal closure
-	socket.disconnectFromHost();
+	state = State::Closed;
+	ping.stop();
+	teardown();
+	emit closed(QString());
+}
+
+void WebSocket::teardown()
+{
+	delete readable;
+	delete writable;
+	readable = writable = nullptr;
+	if (easy) {
+		Net::instance().remove(easy);
+		curl_easy_cleanup(easy);
+		easy = nullptr;
+	}
+}
+
+void WebSocket::write(const QByteArray &data)
+{
+	outgoing += data;
+	flush();
+}
+
+void WebSocket::flush()
+{
+	while (easy && !outgoing.isEmpty()) {
+		size_t sent = 0;
+		const CURLcode rc = curl_easy_send(easy, outgoing.constData(), size_t(outgoing.size()), &sent);
+		if (rc == CURLE_AGAIN)
+			break;
+		if (rc != CURLE_OK) {
+			fail(QString::fromUtf8(curl_easy_strerror(rc)));
+			return;
+		}
+		outgoing.remove(0, qsizetype(sent));
+	}
+	if (writable)
+		writable->setEnabled(!outgoing.isEmpty());
+}
+
+void WebSocket::disconnected()
+{
+	if (state == State::Closed)
+		return;
+	const bool wanted = closing;
+	state = State::Closed;
+	ping.stop();
+	teardown();
+	emit closed(wanted ? QString() : tr("The connection closed"));
 }
 
 void WebSocket::sendText(const QString &text)
@@ -84,12 +153,31 @@ void WebSocket::onConnected()
 	for (const auto &h : headers)
 		req += h.first + ": " + h.second + "\r\n";
 	req += "\r\n";
-	socket.write(req);
+	write(req);
 }
 
 void WebSocket::onReadyRead()
 {
-	buffer += socket.readAll();
+	// Until curl has nothing more: TLS may hold decrypted bytes the socket
+	// no longer signals.
+	for (;;) {
+		char chunk[16384];
+		size_t n = 0;
+		const CURLcode rc = easy ? curl_easy_recv(easy, chunk, sizeof(chunk), &n) : CURLE_AGAIN;
+		if (rc == CURLE_AGAIN)
+			break;
+		if (rc != CURLE_OK) {
+			fail(QString::fromUtf8(curl_easy_strerror(rc)));
+			return;
+		}
+		if (n == 0) {
+			if (state == State::Open)
+				readFrames(); // what came before the end
+			disconnected();
+			return;
+		}
+		buffer.append(chunk, qsizetype(n));
+	}
 	if (state == State::Handshake) {
 		const int end = buffer.indexOf("\r\n\r\n");
 		if (end < 0) {
@@ -171,7 +259,7 @@ void WebSocket::readFrames()
 			break;
 		case 0x8:
 			closing = true;
-			socket.disconnectFromHost();
+			disconnected();
 			return;
 		case 0x9:
 			sendFrame(0xA, payload);
@@ -205,7 +293,7 @@ void WebSocket::sendFrame(quint8 opcode, const QByteArray &payload)
 	frame.append(mask, 4);
 	for (int i = 0; i < payload.size(); i++)
 		frame.append(char(payload[i] ^ mask[i % 4]));
-	socket.write(frame);
+	write(frame);
 }
 
 void WebSocket::fail(const QString &reason)
@@ -214,7 +302,6 @@ void WebSocket::fail(const QString &reason)
 		return;
 	state = State::Closed;
 	ping.stop();
-	closing = true; // the disconnected signal must not report a second time
-	socket.abort();
+	teardown();
 	emit closed(reason);
 }
