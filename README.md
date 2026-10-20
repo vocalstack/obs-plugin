@@ -22,8 +22,7 @@ Get the installer for your system from the [latest release](https://github.com/v
 
 Needs OBS Studio 31 or later.
 
-- **Windows:** extract the zip into `C:\ProgramData\obs-studio\plugins`, so the folder
-  `C:\ProgramData\obs-studio\plugins\vocalstack-obs` exists, and restart OBS.
+- **Windows:** close OBS, press Windows + R, type `%ProgramData%\obs-studio\plugins` and press Enter (if it doesn't exist, create the folders `obs-studio\plugins` in `%ProgramData%`). Open the zip and drag its `vocalstack-obs` folder into `plugins`; Windows may ask for administrator permission. Start OBS.
 - **macOS:** open the `.pkg`. It is not signed by Apple yet: if macOS refuses to open it, open
   **System Settings → Privacy & Security** and click **Open Anyway**. Restart OBS.
 - **Linux:** `sudo apt install ./vocalstack-obs-linux-x86_64.deb`, then restart OBS.
