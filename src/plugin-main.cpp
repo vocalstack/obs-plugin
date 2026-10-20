@@ -21,26 +21,49 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 
 #include "caption-overlay.hpp"
+#include "dock.hpp"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
+static Dock *dock = nullptr;
 static CaptionOverlay *overlay = nullptr;
 
 static void on_frontend_event(enum obs_frontend_event event, void *)
 {
-	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
+	switch (event) {
+	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
 		overlay = CaptionOverlay::attach();
-		if (overlay)
-			overlay->setCaption("Captions from VocalStack appear here, over the preview only.");
-	} else if (event == OBS_FRONTEND_EVENT_EXIT) {
+		if (dock)
+			dock->setOverlay(overlay);
+		break;
+	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
+		if (dock)
+			dock->obsStreamingStarted();
+		break;
+	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
+		if (dock)
+			dock->obsStreamingStopped();
+		break;
+	case OBS_FRONTEND_EVENT_EXIT:
+		if (dock)
+			dock->shutdown();
 		delete overlay;
 		overlay = nullptr;
+		break;
+	default:
+		break;
 	}
 }
 
 bool obs_module_load(void)
 {
+	dock = new Dock();
+	if (!obs_frontend_add_dock_by_id("vocalstack", obs_module_text("VocalStack"), dock)) {
+		obs_log(LOG_ERROR, "could not add the VocalStack dock");
+		delete dock;
+		dock = nullptr;
+	}
 	obs_frontend_add_event_callback(on_frontend_event, nullptr);
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
 	return true;

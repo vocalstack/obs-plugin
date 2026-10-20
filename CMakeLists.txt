@@ -22,8 +22,8 @@ if(ENABLE_FRONTEND_API)
 endif()
 
 if(ENABLE_QT)
-  find_package(Qt6 COMPONENTS Widgets Core)
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
+  find_package(Qt6 COMPONENTS Widgets Core Network)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets Qt6::Network)
   target_compile_options(
     ${CMAKE_PROJECT_NAME}
     PRIVATE $<$<C_COMPILER_ID:Clang,AppleClang>:-Wno-quoted-include-in-framework-header -Wno-comma>
@@ -34,6 +34,26 @@ if(ENABLE_QT)
   )
 endif()
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp src/caption-overlay.cpp src/caption-overlay.hpp)
+target_sources(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE
+    src/plugin-main.cpp
+    src/api.cpp
+    src/api.hpp
+    src/caption-overlay.cpp
+    src/caption-overlay.hpp
+    src/connect-login.cpp
+    src/connect-login.hpp
+    src/dock.cpp
+    src/dock.hpp
+    src/session.cpp
+    src/session.hpp
+    src/settings.cpp
+    src/settings.hpp
+    src/vocalstack-output.cpp
+    src/vocalstack-output.hpp
+    src/websocket.cpp
+    src/websocket.hpp
+)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
