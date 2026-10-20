@@ -53,6 +53,13 @@ jobs:
             *) echo 'validTag=false' >> $GITHUB_OUTPUT ;;
           esac
 
+      - uses: actions/checkout@v4
+        if: fromJSON(steps.check.outputs.validTag)
+        with:
+          path: repo
+          sparse-checkout: .github/release-notes.md
+          sparse-checkout-cone-mode: false
+
       - name: Download Build Artifacts 📥
         uses: actions/download-artifact@v4
         if: fromJSON(steps.check.outputs.validTag)
@@ -86,6 +93,13 @@ jobs:
             done
           done
 
+          # Fixed names, so releases/latest/download/<name> (the website's
+          # download links) always fetches the newest.
+          mv *-windows-x64.zip vocalstack-obs-windows-x64.zip
+          mv *-macos-universal.pkg vocalstack-obs-macos.pkg
+          mv *-x86_64-linux-gnu.deb vocalstack-obs-linux-x86_64.deb
+          mv *-source.tar.xz vocalstack-obs-source.tar.xz
+
       - name: Generate Checksums 🪪
         if: fromJSON(steps.check.outputs.validTag)
         run: |
@@ -93,8 +107,9 @@ jobs:
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
           shopt -s extglob
 
-          echo "### Checksums" > ${{ github.workspace }}/CHECKSUMS.txt
-          for file in ${{ github.workspace }}/@(*.exe|*.deb|*.ddeb|*.pkg|*.tar.xz|*.zip); do
+          cp repo/.github/release-notes.md ${{ github.workspace }}/CHECKSUMS.txt
+          echo "### Checksums (SHA-256)" >> ${{ github.workspace }}/CHECKSUMS.txt
+          for file in ${{ github.workspace }}/vocalstack-obs-@(*.deb|*.pkg|*.tar.xz|*.zip); do
             echo "    ${file##*/}: $(sha256sum "${file}" | cut -d " " -f 1)" >> ${{ github.workspace }}/CHECKSUMS.txt
           done
 
@@ -103,15 +118,13 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@9d7c94cfd0a1f3ed45544c887983e9fa900f0564
         with:
-          draft: true
+          draft: false
           prerelease: ${{ fromJSON(steps.check.outputs.prerelease) }}
           tag_name: ${{ steps.check.outputs.version }}
-          name: ${{ needs.build-project.outputs.pluginName }} ${{ steps.check.outputs.version }}
+          name: VocalStack for OBS ${{ steps.check.outputs.version }}
           body_path: ${{ github.workspace }}/CHECKSUMS.txt
           files: |
-            ${{ github.workspace }}/*.exe
-            ${{ github.workspace }}/*.zip
-            ${{ github.workspace }}/*.pkg
-            ${{ github.workspace }}/*.deb
-            ${{ github.workspace }}/*.ddeb
-            ${{ github.workspace }}/*.tar.xz
+            ${{ github.workspace }}/vocalstack-obs-windows-x64.zip
+            ${{ github.workspace }}/vocalstack-obs-macos.pkg
+            ${{ github.workspace }}/vocalstack-obs-linux-x86_64.deb
+            ${{ github.workspace }}/vocalstack-obs-source.tar.xz
