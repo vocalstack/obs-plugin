@@ -11,13 +11,6 @@ on:
 permissions:
   contents: write
 jobs:
-  check-format:
-    name: Check Formatting 🔍
-    if: github.ref_name == 'master' || github.ref_name == 'main'
-    uses: ./.github/workflows/check-format.yaml
-    permissions:
-      contents: read
-
   build-project:
     name: Build Project 🧱
     uses: ./.github/workflows/build-project.yaml
@@ -28,7 +21,7 @@ jobs:
   create-release:
     name: Create Release 🛫
     if: github.ref_type == 'tag'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     needs: build-project
     defaults:
       run:

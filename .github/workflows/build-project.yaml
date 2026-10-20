@@ -8,7 +8,7 @@ on:
 jobs:
   check-event:
     name: Check GitHub Event Data 🔎
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     defaults:
       run:
         shell: bash
@@ -73,7 +73,8 @@ jobs:
 
   macos-build:
     name: Build for macOS 🍏
-    runs-on: macos-15
+    # Blacksmith (Alex, 2026-10-20): Apple Silicon, 20x a Linux minute.
+    runs-on: blacksmith-6vcpu-macos-15
     needs: check-event
     defaults:
       run:
@@ -180,7 +181,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: check-event
     defaults:
       run:
@@ -251,7 +252,7 @@ jobs:
 
   windows-build:
     name: Build for Windows 🪟
-    runs-on: windows-2022
+    runs-on: blacksmith-4vcpu-windows-2025
     needs: check-event
     defaults:
       run:
