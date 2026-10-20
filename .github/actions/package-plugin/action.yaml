@@ -75,7 +75,7 @@ runs:
       run: |
         : Install Dependencies 🛍️
         echo ::group::Install Dependencies
-        # Blacksmith's Ubuntu image keeps Homebrew read-only: zsh from apt.
+        # zsh from apt: no Homebrew needed (and some runner images keep it read-only).
         sudo apt-get update -qq
         sudo apt-get install -y -qq zsh
         echo ::endgroup::

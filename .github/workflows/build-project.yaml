@@ -8,7 +8,7 @@ on:
 jobs:
   check-event:
     name: Check GitHub Event Data 🔎
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     defaults:
       run:
@@ -74,9 +74,8 @@ jobs:
 
   macos-build:
     name: Build for macOS 🍏
-    # Blacksmith (Alex, 2026-10-20): Apple Silicon, 20x a Linux minute.
-    runs-on: blacksmith-6vcpu-macos-15
-    # A cap, so a hung build cannot run up the bill (macOS is 20x Linux).
+    runs-on: macos-15
+    # A cap, so a hung build cannot run up the bill (macOS bills 10x Linux).
     timeout-minutes: 30
     needs: check-event
     defaults:
@@ -184,7 +183,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     needs: check-event
     defaults:
@@ -256,7 +255,7 @@ jobs:
 
   windows-build:
     name: Build for Windows 🪟
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: windows-2022
     timeout-minutes: 40
     needs: check-event
     defaults:
