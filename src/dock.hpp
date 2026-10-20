@@ -24,9 +24,11 @@ class Dock : public QWidget {
 public:
 	explicit Dock(QWidget *parent = nullptr);
 
-	// OBS's own Start/Stop Streaming, when "with OBS streaming" is on.
-	void obsStreamingStarted();
-	void obsStreamingStopped();
+	// OBS started or stopped streaming or recording: with "Start and stop
+	// with OBS" on, transcription starts with the first and stops when
+	// neither runs.
+	void obsOutputStarted();
+	void obsOutputStopped();
 	// OBS is closing: end the session.
 	void shutdown();
 	void watchClose(QWidget *mainWindow);
@@ -35,7 +37,7 @@ public:
 	void showFirstTime(QMainWindow *mainWindow);
 	void setOverlay(CaptionOverlay *overlay);
 	// Start when idle, else stop: the dock's button, and the
-	// "VocalStack: Start/Stop" hotkey.
+	// "VocalStack: Start/Stop transcribing" hotkey.
 	void toggle();
 
 protected:
@@ -53,6 +55,7 @@ private:
 	void newBroadcast();
 	void onState(Session::State s);
 	void setStatus(QLabel *label, const QString &text, bool error);
+	void updateFollowHint();
 
 	Api *api;
 	Settings settings;
@@ -71,5 +74,5 @@ private:
 	QComboBox *broadcastBox, *spokenBox, *captionBox, *sendBox;
 	QCheckBox *followBox;
 	QPushButton *startButton;
-	QLabel *sessionStatus;
+	QLabel *followHint, *sessionStatus;
 };

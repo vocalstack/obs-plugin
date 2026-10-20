@@ -4,6 +4,7 @@
 #include "caption-overlay.hpp"
 #include "connect-login.hpp"
 
+#include <obs-frontend-api.h>
 #include <plugin-support.h>
 
 #include <QCheckBox>
@@ -177,18 +178,26 @@ QWidget *Dock::buildSignedIn()
 	});
 	v->addLayout(form);
 
-	followBox = new QCheckBox(tr("Start and stop with OBS streaming"));
-	followBox->setChecked(settings.followStreaming);
+	followBox = new QCheckBox(tr("Start and stop with OBS streaming or recording"));
+	followBox->setChecked(settings.followObs);
 	connect(followBox, &QCheckBox::toggled, this, [this](bool on) {
-		settings.followStreaming = on;
+		settings.followObs = on;
 		settings.save();
+		updateFollowHint();
 	});
 	v->addWidget(followBox);
 
-	startButton = new QPushButton(tr("Start"));
+	startButton = new QPushButton(tr("Start transcribing"));
 	startButton->setMinimumHeight(32);
 	connect(startButton, &QPushButton::clicked, this, &Dock::toggle);
 	v->addWidget(startButton);
+
+	// Says the button need not be pressed when OBS will start it.
+	followHint = new QLabel(tr("Starts when you start streaming or recording in OBS."));
+	followHint->setWordWrap(true);
+	followHint->setStyleSheet("color: #8b8b96;"); // muted on dark and light themes
+	v->addWidget(followHint);
+	updateFollowHint();
 
 	sessionStatus = new QLabel;
 	sessionStatus->setWordWrap(true);
@@ -258,7 +267,7 @@ void Dock::signOut(const QString &why)
 	const Settings kept = settings;
 	settings = Settings();
 	settings.sendVideo = kept.sendVideo;
-	settings.followStreaming = kept.followStreaming;
+	settings.followObs = kept.followObs;
 	settings.save();
 	api->setKey(QString());
 	showSignedIn(false);
@@ -346,8 +355,11 @@ void Dock::newBroadcast()
 void Dock::onState(Session::State s)
 {
 	const bool idle = s == Session::State::Idle;
-	startButton->setText(idle ? tr("Start") : s == Session::State::Stopping ? tr("Stopping…") : tr("Stop"));
+	startButton->setText(idle ? tr("Start transcribing")
+				  : s == Session::State::Stopping ? tr("Stopping…")
+								  : tr("Stop transcribing"));
 	startButton->setEnabled(s != Session::State::Stopping);
+	updateFollowHint();
 	broadcastBox->setEnabled(idle);
 	spokenBox->setEnabled(idle);
 	sendBox->setEnabled(idle);
@@ -363,16 +375,28 @@ void Dock::toggle()
 		session->stop();
 }
 
-void Dock::obsStreamingStarted()
+static bool obs_busy()
 {
-	if (settings.followStreaming && !settings.apiKey.isEmpty())
-		session->start();
+	return obs_frontend_streaming_active() || obs_frontend_recording_active();
 }
 
-void Dock::obsStreamingStopped()
+void Dock::obsOutputStarted()
 {
-	if (settings.followStreaming)
+	if (settings.followObs && !settings.apiKey.isEmpty() && session->state() == Session::State::Idle)
+		session->start();
+	updateFollowHint();
+}
+
+void Dock::obsOutputStopped()
+{
+	if (settings.followObs && !obs_busy())
 		session->stop();
+	updateFollowHint();
+}
+
+void Dock::updateFollowHint()
+{
+	followHint->setVisible(settings.followObs && session->state() == Session::State::Idle && !obs_busy());
 }
 
 void Dock::shutdown()

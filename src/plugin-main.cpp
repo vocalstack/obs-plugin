@@ -66,12 +66,14 @@ static void on_frontend_event(enum obs_frontend_event event, void *)
 		}
 		break;
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
+	case OBS_FRONTEND_EVENT_RECORDING_STARTED:
 		if (dock)
-			dock->obsStreamingStarted();
+			dock->obsOutputStarted();
 		break;
 	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
+	case OBS_FRONTEND_EVENT_RECORDING_STOPPED:
 		if (dock)
-			dock->obsStreamingStopped();
+			dock->obsOutputStopped();
 		break;
 	case OBS_FRONTEND_EVENT_EXIT:
 		if (dock)

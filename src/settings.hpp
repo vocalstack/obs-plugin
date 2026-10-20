@@ -19,7 +19,7 @@ struct Settings {
 	QString spokenLanguage;  // empty: detect
 	QString captionLanguage; // empty: the spoken language
 	bool sendVideo = false;
-	bool followStreaming = true;
+	bool followObs = true;
 	bool showCaptions = true;
 	// The dock was put on screen once; after that OBS keeps where it is.
 	bool dockShown = false;

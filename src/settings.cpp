@@ -23,7 +23,7 @@ Settings Settings::load()
 	OBSDataAutoRelease d = obs_data_create_from_json_file_safe(path().toUtf8().constData(), "bak");
 	if (!d)
 		return s;
-	obs_data_set_default_bool(d, "followStreaming", true);
+	obs_data_set_default_bool(d, "followObs", true);
 	obs_data_set_default_bool(d, "showCaptions", true);
 	s.apiKey = str(d, "apiKey");
 	s.account = str(d, "account");
@@ -36,7 +36,7 @@ Settings Settings::load()
 	s.spokenLanguage = str(d, "spokenLanguage");
 	s.captionLanguage = str(d, "captionLanguage");
 	s.sendVideo = obs_data_get_bool(d, "sendVideo");
-	s.followStreaming = obs_data_get_bool(d, "followStreaming");
+	s.followObs = obs_data_get_bool(d, "followObs");
 	s.showCaptions = obs_data_get_bool(d, "showCaptions");
 	s.dockShown = obs_data_get_bool(d, "dockShown");
 	return s;
@@ -61,7 +61,7 @@ void Settings::save() const
 	set("spokenLanguage", spokenLanguage);
 	set("captionLanguage", captionLanguage);
 	obs_data_set_bool(d, "sendVideo", sendVideo);
-	obs_data_set_bool(d, "followStreaming", followStreaming);
+	obs_data_set_bool(d, "followObs", followObs);
 	obs_data_set_bool(d, "showCaptions", showCaptions);
 	obs_data_set_bool(d, "dockShown", dockShown);
 	obs_data_save_json_safe(d, path().toUtf8().constData(), "tmp", "bak");
