@@ -10,6 +10,10 @@ on:
       - '*'
 permissions:
   contents: write
+# A newer push to the same branch cancels the run it replaces.
+concurrency:
+  group: push-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 jobs:
   build-project:
     name: Build Project 🧱
@@ -22,6 +26,7 @@ jobs:
     name: Create Release 🛫
     if: github.ref_type == 'tag'
     runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
     needs: build-project
     defaults:
       run:
