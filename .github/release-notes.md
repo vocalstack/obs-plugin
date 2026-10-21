@@ -10,3 +10,5 @@ Needs OBS Studio 31 or later.
 
 Then open **Docks → VocalStack** if the dock is not showing, and click **Sign in with VocalStack**.
 
+Windows builds are signed: free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org). See the [code signing policy](https://github.com/vocalstack/obs-plugin#code-signing-policy).
+

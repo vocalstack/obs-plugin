@@ -256,8 +256,11 @@ jobs:
   windows-build:
     name: Build for Windows 🪟
     runs-on: windows-2022
-    timeout-minutes: 40
+    # A tag waits up to 30 min for the signing's approval in SignPath.
+    timeout-minutes: 75
     needs: check-event
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     defaults:
       run:
         shell: pwsh
@@ -296,7 +299,36 @@ jobs:
           package: ${{ fromJSON(needs.check-event.outputs.package) }}
 
       - name: Upload Artifacts 📡
+        id: upload-windows
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}
           path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64*.*
+
+      # A release's DLL is signed by SignPath (free for open source, the
+      # certificate SignPath Foundation's): Windows 11's Smart App Control
+      # blocks unsigned DLLs. A version tag only, as each signing waits for
+      # a person's approval in SignPath; skipped until the SIGNPATH_API_TOKEN
+      # secret and the SIGNPATH_* variables are set. The signed zip replaces
+      # the unsigned one under the same artifact name, which the release
+      # job collects.
+      - name: Sign the DLL ✍️
+        if: github.ref_type == 'tag' && env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-windows.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: ${{ github.workspace }}/signed
+
+      - name: Upload the Signed Artifact 📡
+        if: github.ref_type == 'tag' && env.SIGNPATH_API_TOKEN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}
+          path: ${{ github.workspace }}/signed/*
+          overwrite: true
