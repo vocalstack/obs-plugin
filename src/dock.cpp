@@ -3,6 +3,7 @@
 #include "api.hpp"
 #include "caption-overlay.hpp"
 #include "connect-login.hpp"
+#include "warm-ping.hpp"
 
 #include <obs-frontend-api.h>
 #include <plugin-support.h>
@@ -67,8 +68,32 @@ Dock::Dock(QWidget *parent)
 			overlay->setCaption(text);
 	});
 
+	// Instant start: while the dock is on screen, signed in, idle and in
+	// use, VocalStack keeps an engine loaded for the next Start.
+	warm = new WarmPing(
+		api, this,
+		[this]() {
+			return !settings.apiKey.isEmpty() && session->state() == Session::State::Idle && isVisible() &&
+			       !window()->isMinimized();
+		},
+		[this]() { return settings.spokenLanguage; }, this);
+
 	api->setKey(settings.apiKey);
 	showSignedIn(!settings.apiKey.isEmpty());
+}
+
+void Dock::showEvent(QShowEvent *event)
+{
+	QWidget::showEvent(event);
+	if (warm)
+		warm->refresh();
+}
+
+void Dock::hideEvent(QHideEvent *event)
+{
+	QWidget::hideEvent(event);
+	if (warm)
+		warm->refresh();
 }
 
 QWidget *Dock::buildSignedOut()
@@ -153,8 +178,12 @@ QWidget *Dock::buildSignedIn()
 	spokenBox = new QComboBox;
 	form->addRow(tr("Spoken language"), spokenBox);
 	connect(spokenBox, &QComboBox::activated, this, [this]() {
-		settings.spokenLanguage = spokenBox->currentData().toString();
+		const QString lang = spokenBox->currentData().toString();
+		const bool changed = lang != settings.spokenLanguage;
+		settings.spokenLanguage = lang;
 		settings.save();
+		if (changed)
+			warm->languageChanged();
 	});
 
 	captionBox = new QComboBox;
@@ -236,6 +265,7 @@ void Dock::signedIn(const QString &key, const QString &account)
 	api->setKey(key);
 	setStatus(signInStatus, QString(), false);
 	showSignedIn(true);
+	warm->refresh();
 }
 
 // A pasted key is checked with a read before it is kept.
@@ -269,6 +299,7 @@ void Dock::signOut(const QString &why)
 	settings.sendVideo = kept.sendVideo;
 	settings.followObs = kept.followObs;
 	settings.save();
+	warm->refresh(); // canStart false while the key still works
 	api->setKey(QString());
 	showSignedIn(false);
 	setStatus(signInStatus, why, !why.isEmpty());
@@ -363,6 +394,8 @@ void Dock::onState(Session::State s)
 	broadcastBox->setEnabled(idle);
 	spokenBox->setEnabled(idle);
 	sendBox->setEnabled(idle);
+	// Starting: canStart false; back to idle: true again if still in use.
+	warm->refresh();
 }
 
 void Dock::toggle()
@@ -401,6 +434,7 @@ void Dock::updateFollowHint()
 
 void Dock::shutdown()
 {
+	warm->end();
 	login->cancel();
 	session->stop();
 }

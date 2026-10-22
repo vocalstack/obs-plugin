@@ -59,6 +59,8 @@ target_sources(
     src/settings.hpp
     src/vocalstack-output.cpp
     src/vocalstack-output.hpp
+    src/warm-ping.cpp
+    src/warm-ping.hpp
     src/websocket.cpp
     src/websocket.hpp
 )

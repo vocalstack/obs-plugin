@@ -15,6 +15,7 @@ class QLineEdit;
 class QMainWindow;
 class QPushButton;
 class QStackedWidget;
+class WarmPing;
 
 // The VocalStack dock: sign-in, then what to send and where, Start/Stop,
 // and how it is going.
@@ -42,6 +43,8 @@ public:
 
 protected:
 	bool eventFilter(QObject *watched, QEvent *event) override;
+	void showEvent(QShowEvent *event) override;
+	void hideEvent(QHideEvent *event) override;
 
 private:
 	QWidget *buildSignedOut();
@@ -62,6 +65,7 @@ private:
 	Session *session;
 	ConnectLogin *login;
 	CaptionOverlay *overlay = nullptr;
+	WarmPing *warm = nullptr;
 	bool closeHeld = false;
 
 	QStackedWidget *pages;

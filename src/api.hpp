@@ -29,6 +29,8 @@ public:
 
 	void get(const QString &path, Done done);
 	void post(const QString &path, const QJsonObject &body, Done done);
+	// A post whose refusal never signs the person out (background pings).
+	void postQuiet(const QString &path, const QJsonObject &body, Done done);
 	void put(const QString &path, Done done);
 	void del(const QString &path, Done done);
 	// A form post without the key (OAuth's token endpoint).
@@ -40,7 +42,7 @@ signals:
 
 private:
 	void send(const QString &method, const QString &path, const QByteArray *body, const char *contentType,
-		  bool withKey, Done done);
+		  bool withKey, Done done, bool quiet = false);
 
 	QString api, app, apiKey;
 };

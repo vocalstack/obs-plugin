@@ -30,6 +30,12 @@ void Api::post(const QString &path, const QJsonObject &body, Done done)
 	send("POST", path, &json, "application/json", true, std::move(done));
 }
 
+void Api::postQuiet(const QString &path, const QJsonObject &body, Done done)
+{
+	const QByteArray json = QJsonDocument(body).toJson(QJsonDocument::Compact);
+	send("POST", path, &json, "application/json", true, std::move(done), true);
+}
+
 void Api::put(const QString &path, Done done)
 {
 	send("PUT", path, nullptr, nullptr, true, std::move(done));
@@ -68,7 +74,7 @@ static size_t collect(char *data, size_t size, size_t n, void *into)
 }
 
 void Api::send(const QString &method, const QString &path, const QByteArray *body, const char *contentType,
-	       bool withKey, Done done)
+	       bool withKey, Done done, bool quiet)
 {
 	CURL *easy = curl_easy_init();
 	auto *received = new QByteArray;
@@ -94,7 +100,8 @@ void Api::send(const QString &method, const QString &path, const QByteArray *bod
 	}
 
 	QPointer<Api> self(this);
-	Net::instance().add(easy, [self, easy, headers, received, withKey, done = std::move(done)](CURLcode result) {
+	const bool signOut = withKey && !quiet;
+	Net::instance().add(easy, [self, easy, headers, received, signOut, done = std::move(done)](CURLcode result) {
 		long status = 0;
 		curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
 		const QJsonDocument doc = QJsonDocument::fromJson(*received);
@@ -108,7 +115,7 @@ void Api::send(const QString &method, const QString &path, const QByteArray *bod
 			return;
 		}
 		if (status >= 400) {
-			if (status == 401 && withKey)
+			if (status == 401 && signOut)
 				emit self->unauthorized();
 			done(int(status), doc, error_text(int(status), doc));
 			return;
