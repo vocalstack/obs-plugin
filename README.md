@@ -3,6 +3,8 @@
 Transcribe your OBS stream live with [VocalStack](https://vocalstack.com/obs-studio-transcription-plugin/), and
 see the captions over OBS's preview. Captions never go into your stream or recordings.
 
+Read more about the [VocalStack live transcription plugin for OBS Studio](https://vocalstack.com/obs-studio-transcription-plugin/) on the [VocalStack website](https://vocalstack.com/).
+
 - A **VocalStack dock** in OBS: sign in with one click (or an API key), pick a broadcast, set the spoken
   language and choose captions as spoken or translated.
 - **Start transcribing** from the dock or a hotkey, or let it start and stop with OBS's own streaming or
