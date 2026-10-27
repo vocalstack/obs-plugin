@@ -34,6 +34,9 @@ signals:
 	// What the dock shows under the button; `error` makes it red.
 	void status(const QString &text, bool error);
 	void caption(const QString &text);
+	// A warning that stays until the next Start (the spoken language does
+	// not match the speech, the engine stopped); empty hides it.
+	void notice(const QString &text);
 
 private:
 	using Next = std::function<void()>;
@@ -48,6 +51,9 @@ private:
 	void startRecording(bool takeover);
 	void subscribe();
 	void onFrame(const QString &text);
+	void showCaption(const QString &words, const QList<qint64> &seqs);
+	void clearCaption();
+	void setNotes(const QString &language, const QString &feed);
 	void pollIngest();
 
 	Api *api;
@@ -58,4 +64,13 @@ private:
 	State st = State::Idle;
 	QString recordingId;
 	qint64 lastSeq = -1;
+	// The rows the caption on screen was made from.
+	QList<qint64> shownSeqs;
+	// The recording sends sentences (sentences.enabled): the caption is
+	// made from them only, not also from the rows they are made of.
+	bool sentences = false;
+	// The wait before the caption feed is opened again; it doubles while
+	// the feed keeps closing.
+	int resubscribeMs;
+	QString languageNote, feedNote;
 };

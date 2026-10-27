@@ -35,13 +35,16 @@ public:
 	void del(const QString &path, Done done);
 	// A form post without the key (OAuth's token endpoint).
 	void postForm(const QString &path, const QUrlQuery &form, Done done);
+	// A GET of another site's JSON at `url`, without the key (GitHub's
+	// releases, for the update check).
+	void getUrl(const QString &url, Done done);
 
 signals:
 	// The key was refused (revoked, deleted): the person must sign in again.
 	void unauthorized();
 
 private:
-	void send(const QString &method, const QString &path, const QByteArray *body, const char *contentType,
+	void send(const QString &method, const QString &url, const QByteArray *body, const char *contentType,
 		  bool withKey, Done done, bool quiet = false);
 
 	QString api, app, apiKey;

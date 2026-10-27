@@ -59,7 +59,8 @@ provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath F
 **Privacy:** the plugin sends nothing until you sign in. When you start transcribing it sends OBS's audio (or
 audio and video, if you choose) to VocalStack, and nowhere else, to transcribe it into your VocalStack account;
 see the [VocalStack Privacy Policy](https://vocalstack.com/privacy/). Signing out stops it and removes the
-plugin's stream key.
+plugin's stream key. Once you are signed in, it also asks GitHub once each time OBS starts whether a
+newer release of the plugin is out; that request carries only the plugin's version.
 
 ## Licence
 

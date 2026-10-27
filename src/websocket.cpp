@@ -77,13 +77,18 @@ void WebSocket::close()
 	state = State::Closed;
 	ping.stop();
 	teardown();
-	emit closed(QString());
+	emit closed(QString(), 0);
 }
 
 void WebSocket::teardown()
 {
-	delete readable;
-	delete writable;
+	// Often called from a notifier's own signal (a frame that ends the
+	// session, the server's close): off now, deleted once it returns.
+	for (QSocketNotifier *n : {readable, writable})
+		if (n) {
+			n->setEnabled(false);
+			n->deleteLater();
+		}
 	readable = writable = nullptr;
 	if (easy) {
 		Net::instance().remove(easy);
@@ -123,7 +128,7 @@ void WebSocket::disconnected()
 	state = State::Closed;
 	ping.stop();
 	teardown();
-	emit closed(wanted ? QString() : tr("The connection closed"));
+	emit closed(wanted ? QString() : tr("The connection closed"), 0);
 }
 
 void WebSocket::sendText(const QString &text)
@@ -257,10 +262,14 @@ void WebSocket::readFrames()
 				message.clear();
 			}
 			break;
-		case 0x8:
-			closing = true;
-			disconnected();
+		case 0x8: {
+			// The server closed it: answered with its code (RFC 6455
+			// §5.5.1), and not taken for our own close().
+			const int code = payload.size() >= 2 ? (quint8(payload[0]) << 8) | quint8(payload[1]) : 1005;
+			sendFrame(0x8, payload.left(2));
+			fail(tr("VocalStack closed the caption feed (%1)").arg(code), code);
 			return;
+		}
 		case 0x9:
 			sendFrame(0xA, payload);
 			break;
@@ -296,12 +305,12 @@ void WebSocket::sendFrame(quint8 opcode, const QByteArray &payload)
 	write(frame);
 }
 
-void WebSocket::fail(const QString &reason)
+void WebSocket::fail(const QString &reason, int code)
 {
 	if (state == State::Closed)
 		return;
 	state = State::Closed;
 	ping.stop();
 	teardown();
-	emit closed(reason);
+	emit closed(reason, code);
 }

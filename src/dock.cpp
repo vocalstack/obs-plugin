@@ -18,6 +18,7 @@
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
+#include <QRegularExpression>
 #include <QMainWindow>
 #include <QPushButton>
 #include <QStackedWidget>
@@ -27,6 +28,22 @@
 
 // Caption box choices that are not a language.
 static const char *CAPTIONS_OFF = "off";
+
+// The plugin's releases (a version tag, `1.2.3`, publishes one).
+static const char *LATEST_RELEASE_API = "https://api.github.com/repos/vocalstack/obs-plugin/releases/latest";
+static const char *LATEST_RELEASE_PAGE = "https://github.com/vocalstack/obs-plugin/releases/latest";
+
+// Whether version `a` is newer than `b` (`1.2.3`, numbers compared).
+static bool newer(const QString &a, const QString &b)
+{
+	const QStringList x = a.split('.'), y = b.split('.');
+	for (qsizetype i = 0; i < qMax(x.size(), y.size()); i++) {
+		const int p = x.value(i).toInt(), q = y.value(i).toInt();
+		if (p != q)
+			return p > q;
+	}
+	return false;
+}
 
 Dock::Dock(QWidget *parent)
 	: QWidget(parent),
@@ -38,6 +55,12 @@ Dock::Dock(QWidget *parent)
 {
 	auto *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(8, 8, 8, 8);
+	updateNotice = new QLabel;
+	updateNotice->setWordWrap(true);
+	updateNotice->setTextFormat(Qt::RichText);
+	updateNotice->setOpenExternalLinks(true);
+	updateNotice->hide();
+	layout->addWidget(updateNotice);
 	layout->addWidget(pages);
 	pages->addWidget(buildSignedOut());
 	pages->addWidget(buildSignedIn());
@@ -60,6 +83,12 @@ Dock::Dock(QWidget *parent)
 		if (error)
 			obs_log(LOG_WARNING, "%s", text.toUtf8().constData());
 		setStatus(sessionStatus, text, error);
+	});
+	connect(session, &Session::notice, this, [this](const QString &text) {
+		if (!text.isEmpty())
+			obs_log(LOG_WARNING, "%s", text.toUtf8().constData());
+		sessionNotice->setText(text);
+		sessionNotice->setVisible(!text.isEmpty());
 	});
 	connect(session, &Session::caption, this, [this](const QString &text) {
 		if (!qEnvironmentVariableIsEmpty("VOCALSTACK_DEBUG"))
@@ -231,6 +260,13 @@ QWidget *Dock::buildSignedIn()
 	sessionStatus = new QLabel;
 	sessionStatus->setWordWrap(true);
 	v->addWidget(sessionStatus);
+	// What VocalStack warns about while live (the speech is another
+	// language than the spoken language set), kept until the next Start.
+	sessionNotice = new QLabel;
+	sessionNotice->setWordWrap(true);
+	sessionNotice->setStyleSheet("color: #f0a63a;"); // amber on dark and light themes
+	sessionNotice->hide();
+	v->addWidget(sessionNotice);
 	v->addStretch(1);
 	return page;
 }
@@ -255,6 +291,27 @@ void Dock::showSignedIn(bool in)
 							 : tr("Signed in to <b>%1</b>").arg(settings.account.toHtmlEscaped()));
 	loadLists();
 	loadBroadcasts();
+	checkForUpdate();
+}
+
+// Once an OBS run, when signed in (nothing is sent before): whether GitHub
+// has a newer release of the plugin. Errors are ignored.
+void Dock::checkForUpdate()
+{
+	if (updateChecked)
+		return;
+	updateChecked = true;
+	api->getUrl(LATEST_RELEASE_API, [this](int, const QJsonDocument &doc, const QString &error) {
+		const QString tag = doc.object().value("tag_name").toString();
+		static const QRegularExpression version("^\\d+(\\.\\d+)*$");
+		if (!error.isEmpty() || !version.match(tag).hasMatch() || !newer(tag, PLUGIN_VERSION))
+			return;
+		obs_log(LOG_INFO, "VocalStack for OBS %s is out (this is %s)", tag.toUtf8().constData(),
+			PLUGIN_VERSION);
+		updateNotice->setText(tr("VocalStack for OBS %1 is out (you have %2). <a href=\"%3\">Download it</a>")
+					      .arg(tag, PLUGIN_VERSION, LATEST_RELEASE_PAGE));
+		updateNotice->show();
+	});
 }
 
 void Dock::signedIn(const QString &key, const QString &account)

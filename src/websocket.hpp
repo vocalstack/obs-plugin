@@ -31,7 +31,8 @@ signals:
 	void opened();
 	void textMessage(const QString &text);
 	// The socket is gone; `reason` says why when it was not close().
-	void closed(const QString &reason);
+	// `code`: the server's close code when it closed the socket, else 0.
+	void closed(const QString &reason, int code);
 
 private:
 	enum class State { Closed, Handshake, Open };
@@ -45,7 +46,7 @@ private:
 	void teardown();
 	void readFrames();
 	void sendFrame(quint8 opcode, const QByteArray &payload);
-	void fail(const QString &reason);
+	void fail(const QString &reason, int code = 0);
 
 	CURL *easy = nullptr;
 	QSocketNotifier *readable = nullptr, *writable = nullptr;

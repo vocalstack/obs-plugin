@@ -59,6 +59,7 @@ private:
 	void onState(Session::State s);
 	void setStatus(QLabel *label, const QString &text, bool error);
 	void updateFollowHint();
+	void checkForUpdate();
 
 	Api *api;
 	Settings settings;
@@ -67,6 +68,7 @@ private:
 	CaptionOverlay *overlay = nullptr;
 	WarmPing *warm = nullptr;
 	bool closeHeld = false;
+	bool updateChecked = false;
 
 	QStackedWidget *pages;
 	// Signed out.
@@ -78,5 +80,5 @@ private:
 	QComboBox *broadcastBox, *spokenBox, *captionBox, *sendBox;
 	QCheckBox *followBox;
 	QPushButton *startButton;
-	QLabel *followHint, *sessionStatus;
+	QLabel *followHint, *sessionStatus, *sessionNotice, *updateNotice;
 };

@@ -21,35 +21,40 @@ Api::Api(QObject *parent)
 
 void Api::get(const QString &path, Done done)
 {
-	send("GET", path, nullptr, nullptr, true, std::move(done));
+	send("GET", api + path, nullptr, nullptr, true, std::move(done));
 }
 
 void Api::post(const QString &path, const QJsonObject &body, Done done)
 {
 	const QByteArray json = QJsonDocument(body).toJson(QJsonDocument::Compact);
-	send("POST", path, &json, "application/json", true, std::move(done));
+	send("POST", api + path, &json, "application/json", true, std::move(done));
 }
 
 void Api::postQuiet(const QString &path, const QJsonObject &body, Done done)
 {
 	const QByteArray json = QJsonDocument(body).toJson(QJsonDocument::Compact);
-	send("POST", path, &json, "application/json", true, std::move(done), true);
+	send("POST", api + path, &json, "application/json", true, std::move(done), true);
 }
 
 void Api::put(const QString &path, Done done)
 {
-	send("PUT", path, nullptr, nullptr, true, std::move(done));
+	send("PUT", api + path, nullptr, nullptr, true, std::move(done));
 }
 
 void Api::del(const QString &path, Done done)
 {
-	send("DELETE", path, nullptr, nullptr, true, std::move(done));
+	send("DELETE", api + path, nullptr, nullptr, true, std::move(done));
 }
 
 void Api::postForm(const QString &path, const QUrlQuery &form, Done done)
 {
 	const QByteArray body = form.toString(QUrl::FullyEncoded).toUtf8();
-	send("POST", path, &body, "application/x-www-form-urlencoded", false, std::move(done));
+	send("POST", api + path, &body, "application/x-www-form-urlencoded", false, std::move(done));
+}
+
+void Api::getUrl(const QString &url, Done done)
+{
+	send("GET", url, nullptr, nullptr, false, std::move(done));
 }
 
 // The message of an API error envelope ({ error: { message } }), OAuth's
@@ -73,8 +78,8 @@ static size_t collect(char *data, size_t size, size_t n, void *into)
 	return size * n;
 }
 
-void Api::send(const QString &method, const QString &path, const QByteArray *body, const char *contentType,
-	       bool withKey, Done done, bool quiet)
+void Api::send(const QString &method, const QString &url, const QByteArray *body, const char *contentType, bool withKey,
+	       Done done, bool quiet)
 {
 	CURL *easy = curl_easy_init();
 	auto *received = new QByteArray;
@@ -84,7 +89,7 @@ void Api::send(const QString &method, const QString &path, const QByteArray *bod
 	if (withKey && !apiKey.isEmpty())
 		headers = curl_slist_append(headers, ("Authorization: Bearer " + apiKey.toUtf8()).constData());
 
-	curl_easy_setopt(easy, CURLOPT_URL, (api + path).toUtf8().constData());
+	curl_easy_setopt(easy, CURLOPT_URL, url.toUtf8().constData());
 	curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headers);
 	curl_easy_setopt(easy, CURLOPT_USERAGENT, (QByteArray("vocalstack-obs/") + PLUGIN_VERSION).constData());
 	curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, 20000L);
