@@ -46,17 +46,9 @@ cp -R build_macos/RelWithDebInfo/vocalstack-obs.plugin \
 
 `VOCALSTACK_API` and `VOCALSTACK_APP` point the plugin at another VocalStack environment.
 
-## Code signing policy
+## Privacy
 
-Windows releases are signed so that Windows (including Smart App Control) loads the plugin. Free code signing
-provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-
-- **Authors and reviewers:** [Alex Bughiu](https://github.com/arbughiu) (VocalStack) commits to and reviews
-  this repository.
-- **Approvers:** Alex Bughiu approves each signing request, one per release.
-- Only binaries built by this repository's GitHub Actions workflows from its own source are signed.
-
-**Privacy:** the plugin sends nothing until you sign in. When you start transcribing it sends OBS's audio (or
+The plugin sends nothing until you sign in. When you start transcribing it sends OBS's audio (or
 audio and video, if you choose) to VocalStack, and nowhere else, to transcribe it into your VocalStack account;
 see the [VocalStack Privacy Policy](https://vocalstack.com/privacy/). Signing out stops it and removes the
 plugin's stream key. Once you are signed in, it also asks GitHub once each time OBS starts whether a
