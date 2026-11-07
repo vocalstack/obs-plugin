@@ -68,7 +68,12 @@ Dock::Dock(QWidget *parent)
 	updateNotice->setOpenExternalLinks(true);
 	updateNotice->hide();
 	layout->addWidget(updateNotice);
-	layout->addWidget(pages);
+	layout->addWidget(pages, 1);
+	// Which build this is, at the foot of the dock.
+	auto *version = new QLabel(tr("VocalStack for OBS %1").arg(PLUGIN_VERSION));
+	version->setStyleSheet("color: #8b8b96;");
+	version->setAlignment(Qt::AlignRight);
+	layout->addWidget(version);
 	pages->addWidget(buildSignedOut());
 	pages->addWidget(buildSignedIn());
 
