@@ -24,6 +24,9 @@ class Session : public QObject {
 
 public:
 	enum class State { Idle, Starting, Live, Stopping };
+	// How a status reads: as it should be, a passing warning (reconnecting,
+	// silence), or a failure.
+	enum class Level { Ok, Warn, Error };
 
 	Session(Api *api, Settings *settings, QObject *parent = nullptr);
 
@@ -38,13 +41,16 @@ public:
 
 signals:
 	void stateChanged(Session::State state);
-	// What the dock shows under the button; `error` makes it red. The
-	// text may carry a link (HTML).
-	void status(const QString &text, bool error);
-	void caption(const QString &text);
-	// A warning that stays until the next Start (the spoken language does
-	// not match the speech, the engine stopped); empty hides it.
-	void notice(const QString &text);
+	// What the dock shows about the session. The text may carry a link
+	// (HTML).
+	void status(const QString &text, Session::Level level);
+	// The words to caption, and who said them ("Speaker 2", a name) once
+	// more than one speaker has been heard; empty words clear it.
+	void caption(const QString &speaker, const QString &text);
+	// Warnings that stay until the next Start (the spoken language does
+	// not match the speech, the engine stopped), one per item; empty
+	// hides them.
+	void notices(const QStringList &notes);
 	// VocalStack refused the caption language (its limit of languages a
 	// recording, say): captions went back to the spoken language.
 	void captionLanguageRefused(const QString &message);

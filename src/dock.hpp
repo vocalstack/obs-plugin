@@ -3,6 +3,7 @@
 #include "session.hpp"
 #include "settings.hpp"
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonObject>
 #include <QWidget>
@@ -19,11 +20,20 @@ class QPushButton;
 class QStackedWidget;
 class QTimer;
 class QToolButton;
+class QVBoxLayout;
 class Updater;
 class WarmPing;
 
+namespace ui {
+class Callout;
+class ElidedLabel;
+class ReloadingCombo;
+class Segmented;
+} // namespace ui
+
 // The VocalStack dock: sign-in, then what to send and where, Start/Stop,
-// and how it is going.
+// and how it is going; settings and the broadcast editor are pages of
+// their own.
 class Dock : public QWidget {
 	Q_OBJECT
 
@@ -50,33 +60,42 @@ protected:
 	bool eventFilter(QObject *watched, QEvent *event) override;
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
+	void changeEvent(QEvent *event) override;
 
 private:
+	enum Page { SignedOut, SettingsPage, Main, Editor };
+
 	QWidget *buildSignedOut();
 	QWidget *buildSignedIn();
 	QWidget *buildSettings();
+	QWidget *buildBroadcastEditor();
+	// A page's header: ‹ back to the main page, a title, a subtitle.
+	QWidget *pageHeader(QLabel **titleLabel, QLabel **subtitleLabel);
+	void applyTheme();
 	void showSignedIn(bool in);
 	void signedIn(const QString &key, const QString &account);
 	void signOut(const QString &why);
 	void useKey();
+	void setSigningIn(bool waiting);
 	void loadLists();
 	void loadBroadcasts();
-	// The broadcast editor, a page of its own: a new broadcast (`id`
-	// empty) or the one with `id`, as on VocalStack's dashboard.
-	QWidget *buildBroadcastEditor();
-	void openBroadcastEditor(const QString &id);
-	void saveBroadcast();
-	void updateBroadcastEditor();
+	void fillBroadcasts();
+	void showBroadcastLink();
 	void copyBroadcastLink();
 	void copyTranscriptLink();
 	void openTranscription();
 	void onState(Session::State s);
-	void setStatus(QLabel *label, const QString &text, bool error);
+	void onStatus(const QString &text, Session::Level level);
+	void showNotices(const QStringList &notes);
+	void tickLive();
 	void updateFollowHint();
 	void updateLinks();
 	void showUpdate();
 	// A broadcast was chosen: its capture settings become the dock's.
 	void applyBroadcastDefaults(const QString &id);
+	void openBroadcastEditor(const QString &id);
+	void updateBroadcastEditor();
+	void saveBroadcast();
 
 	Api *api;
 	Settings settings;
@@ -86,48 +105,76 @@ private:
 	WarmPing *warm = nullptr;
 	Updater *updater;
 	bool closeHeld = false;
-	// "Update now" was clicked: the update installs once nothing is being
-	// transcribed, even with automatic updates off.
-	bool updateWanted = false;
-	// "Check for updates" was clicked: its answer shows beside it.
-	bool checkWanted = false;
-	QPushButton *checkUpdatesButton;
-	// The update notice: a spinner while it downloads or installs, a check
-	// once installed, and × to put it away until it says something else.
-	QTimer *updateSpin;
-	int updateSpinFrame = 0;
-	QString updateNoticeText, updateDismissed;
-	QToolButton *updateDismiss;
-	// The broadcast editor.
-	QString editingId, editingOrigCode;
-	bool editCodeTouched = false, editWasPrivate = false;
-	QLabel *edTitle, *edLinkPrefix, *edAccessNote, *edLinkNote, *edError;
-	QLineEdit *edName, *edCode, *edPassword;
-	QComboBox *edAccess, *edSpoken, *edLabels;
-	QPushButton *edSave;
-	QToolButton *editBroadcastButton, *addBroadcastButton;
-	QLabel *checkUpdatesResult;
-	// Each broadcast's link and capture settings, by id, from the last load.
-	QHash<QString, QString> broadcastLinks;
-	QHash<QString, QJsonObject> broadcastSettings;
-	// Each broadcast as listed, by id (for the editor).
+	bool darkTheme = true;
+	QStackedWidget *pages;
+
+	// Each broadcast as listed, by id, in the list's order.
 	QHash<QString, QJsonObject> broadcastObjects;
+	QStringList broadcastOrder;
+	QString shareHost;
+	qint64 broadcastsLoadedAt = 0;
 	// The languages a broadcast can be spoken in: (name, code), sorted.
 	QList<QPair<QString, QString>> spokenLanguages;
 
-	QStackedWidget *pages;
 	// Signed out.
 	QPushButton *signInButton;
+	QToolButton *cancelSignIn, *keyToggle;
+	QWidget *keyRow;
 	QLineEdit *keyEdit;
 	QLabel *signInStatus;
-	// Signed in.
+	QTimer *signInSpin;
+	int signInFrame = 0;
+
+	// Main page.
 	QLabel *accountLabel;
-	QComboBox *broadcastBox, *spokenBox, *sendBox, *speakersBox;
+	ui::ReloadingCombo *broadcastBox;
+	QComboBox *spokenBox;
+	ui::Segmented *sendSwitch;
+	QToolButton *editBroadcastButton, *copyBroadcastButton;
+	ui::ElidedLabel *broadcastLink;
+	QPushButton *startButton, *openButton, *copyLinkButton;
+	QLabel *followHint, *idleStatus;
+	QWidget *transcriptBlock;
+	QLabel *transcriptEyebrow;
+	// While live: the card under Stop.
+	QWidget *liveCard;
+	QLabel *liveDot, *liveWord, *liveClock, *liveListeners, *liveStatus;
+	QToolButton *captionsToggle;
+	QTimer *liveTick;
+	QElapsedTimer liveSince;
+	Session::Level liveLevel = Session::Level::Ok;
+	int liveTicks = 0;
+	QVBoxLayout *noticesBox;
+	QStringList dismissedNotices;
+	QStringList currentNotices;
+	QTimer *stopSpin;
+	int stopFrame = 0;
+
+	// The update notice at the foot.
+	ui::Callout *updateCallout;
+	QPushButton *updateButton;
+	QTimer *updateSpin;
+	int updateSpinFrame = 0;
+	QString updateNoticeText, updateDismissed;
+	// "Update now" was clicked: the update installs once nothing is being
+	// transcribed, even with automatic updates off.
+	bool updateWanted = false;
+
+	// Settings page.
 	QLineEdit *nameEdit;
+	ui::Segmented *speakersSwitch;
 	QCheckBox *followBox, *lockBox, *autoUpdateBox;
-	QToolButton *copyBroadcastButton;
-	QPushButton *copyLinkButton, *openButton;
-	QLabel *listenersLabel;
-	QPushButton *startButton, *updateButton;
-	QLabel *followHint, *sessionStatus, *sessionNotice, *updateNotice;
+	QPushButton *checkUpdatesButton;
+	QLabel *checkUpdatesResult, *settingsAccount;
+	// "Check for updates" was clicked: its answer shows under it.
+	bool checkWanted = false;
+
+	// The broadcast editor.
+	QString editingId, editingOrigCode;
+	bool editCodeTouched = false, editWasPrivate = false;
+	QLabel *edTitle, *edSubtitle, *edLinkPrefix, *edLinkNote, *edNameNote, *edAccessNote, *edLabelsNote, *edError;
+	QLineEdit *edName, *edCode, *edPassword;
+	ui::Segmented *edAccess, *edSpokenMode, *edLabels;
+	QComboBox *edSpoken;
+	QPushButton *edSave;
 };

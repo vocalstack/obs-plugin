@@ -39,7 +39,7 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 			});
 	});
 	connect(&output, &VocalStackOutput::reconnecting, this,
-		[this]() { emit status(tr("Reconnecting to VocalStack…"), true); });
+		[this]() { emit status(tr("Reconnecting…"), Session::Level::Warn); });
 	connect(&output, &VocalStackOutput::stopped, this, [this](const QString &error, bool keyRefused) {
 		if (keyRefused) {
 			// Removed in the dashboard, or its connection revoked: the
@@ -132,7 +132,7 @@ void Session::start()
 		return;
 	setState(State::Starting);
 	setNotes(QString(), QString());
-	emit status(tr("Connecting to VocalStack…"), false);
+	emit status(tr("Connecting…"), Session::Level::Warn);
 	ensureStreamKey([this]() {
 		if (!output.start(settings->serverUrl, settings->streamKey, settings->sendVideo))
 			failStart(tr("OBS could not start the stream to VocalStack (see the OBS log)"));
@@ -144,7 +144,7 @@ void Session::failStart(const QString &error)
 {
 	output.stop();
 	setState(State::Idle);
-	emit status(error, true);
+	emit status(error, Session::Level::Error);
 }
 
 // The plugin's own stream key, made once (it is shown in full only then)
@@ -385,7 +385,7 @@ void Session::startRecording(bool takeover)
 			  shownSpeaker = -1;
 			  resubscribeMs = reopenEventsMs = RESUBSCRIBE_MS;
 			  setState(State::Live);
-			  emit status(tr("Live: VocalStack is transcribing"), false);
+			  emit status(tr("Transcribing"), Session::Level::Ok);
 			  ingestPoll.start();
 			  openEvents();
 			  if (settings->showCaptions)
@@ -424,9 +424,9 @@ void Session::end(const QString &error)
 		recordingId.clear();
 		setState(State::Idle);
 		if (error.isEmpty())
-			emit status(tr("Stopped"), false);
+			emit status(tr("Stopped"), Session::Level::Ok);
 		else
-			emit status(error, true);
+			emit status(error, Session::Level::Error);
 	};
 	if (!wasLive || recordingId.isEmpty()) {
 		done();
@@ -438,7 +438,7 @@ void Session::end(const QString &error)
 		api->post(base + "/stop", {}, [this, done](int, const QJsonDocument &, const QString &stopError) {
 			done();
 			if (!stopError.isEmpty())
-				emit status(tr("Stopped, but VocalStack said: %1").arg(stopError), true);
+				emit status(tr("Stopped, but VocalStack said: %1").arg(stopError), Session::Level::Warn);
 		});
 	});
 }
@@ -600,7 +600,9 @@ void Session::onFrame(const QString &text)
 	} else if (type == "transcript.languageStatus") {
 		const QString state = f.value("state").toString();
 		if (state == "mismatch" || state == "change_unsupported")
-			setNotes(f.value("message").toString(), feedNote);
+			setNotes(f.value("message").toString() + " " +
+					 tr("Change the spoken language after you stop."),
+				 feedNote);
 		else if (state == "matches")
 			setNotes(QString(), feedNote);
 	} else if (type == "error") {
@@ -632,8 +634,7 @@ void Session::onFrame(const QString &text)
 					  nullptr, minutes));
 	} else if (type == "recording.silence") {
 		const int silent = int(f.value("silentS").toDouble()), in = int(f.value("pausesInS").toDouble());
-		emit status(tr("No speech for %1 s: VocalStack pauses the recording in %2 s").arg(silent).arg(in),
-			    true);
+		emit status(tr("No speech for %1 s · pauses in %2 s").arg(silent).arg(in), Session::Level::Warn);
 	} else if (type == "recording.state") {
 		const QString s = f.value("state").toString();
 		if (st != State::Live)
@@ -651,7 +652,7 @@ void Session::onFrame(const QString &text)
 			resume();
 		} else if (s == "live") {
 			resuming = false;
-			emit status(tr("Live: VocalStack is transcribing"), false);
+			emit status(tr("Transcribing"), Session::Level::Ok);
 		}
 	}
 }
@@ -661,15 +662,15 @@ void Session::resume()
 	if (resuming || recordingId.isEmpty())
 		return;
 	resuming = true;
-	emit status(tr("VocalStack paused the recording; resuming…"), true);
+	emit status(tr("Paused by VocalStack · resuming…"), Session::Level::Warn);
 	api->post("/v1/recordings/" + recordingId + "/resume", {},
 		  [this](int, const QJsonDocument &, const QString &error) {
 			  if (st != State::Live)
 				  return;
 			  if (!error.isEmpty()) {
 				  resuming = false;
-				  emit status(tr("VocalStack paused the recording and would not resume it: %1").arg(error),
-					      true);
+				  emit status(tr("Paused, and VocalStack would not resume: %1").arg(error),
+					      Session::Level::Error);
 			  }
 		  });
 }
@@ -698,13 +699,12 @@ void Session::onIngest(const QJsonObject &f)
 	const QString state = f.value("state").toString();
 	const QString detected = f.value("detected").toString(), error = f.value("error").toString();
 	if (state == "streaming")
-		emit status(tr("Live: VocalStack hears %1").arg(detected.isEmpty() ? tr("the stream") : detected), false);
+		emit status(tr("Hearing %1").arg(detected.isEmpty() ? tr("the stream") : detected), Session::Level::Ok);
 	else if (state == "connecting")
-		emit status(error.isEmpty() ? tr("Live, but no audio is reaching VocalStack yet") : error, true);
+		emit status(error.isEmpty() ? tr("Waiting for audio…") : error, Session::Level::Warn);
 	else if (state == "reconnecting")
-		emit status(error.isEmpty() ? tr("VocalStack lost the stream's audio; reconnecting…")
-					    : tr("VocalStack lost the stream's audio (%1); reconnecting…").arg(error),
-			    true);
+		emit status(error.isEmpty() ? tr("Audio lost · reconnecting…") : tr("Audio lost (%1) · reconnecting…").arg(error),
+			    Session::Level::Warn);
 	else if (state == "failed")
 		end(error.isEmpty() ? tr("VocalStack gave up on the stream") : tr("VocalStack gave up on the stream: %1").arg(error));
 }
@@ -716,7 +716,7 @@ void Session::showCaption(const QString &words, const QList<qint64> &seqs, int s
 	shownSeqs = seqs;
 	shownSpeaker = speaker;
 	const QString label = speakerLabel(speaker);
-	emit caption(label.isEmpty() ? words : QStringLiteral("%1: %2").arg(label, words));
+	emit caption(label, words);
 	captionClear.start();
 }
 
@@ -724,7 +724,7 @@ void Session::clearCaption()
 {
 	shownSeqs.clear();
 	shownSpeaker = -1;
-	emit caption(QString());
+	emit caption(QString(), QString());
 }
 
 void Session::setNotes(const QString &language, const QString &feed)
@@ -735,7 +735,7 @@ void Session::setNotes(const QString &language, const QString &feed)
 	for (const QString &n : {feedNote, languageNote})
 		if (!n.isEmpty())
 			notes.append(n);
-	emit notice(notes.join("\n\n"));
+	emit notices(notes);
 }
 
 // Whether VocalStack hears the stream: the plugin's key's live state.
@@ -750,11 +750,9 @@ void Session::pollIngest()
 				continue;
 			const QString audio = k.value("audio").toString();
 			if (k.value("live").toBool())
-				emit status(tr("Live: VocalStack hears %1").arg(audio.isEmpty() ? tr("the stream") : audio),
-					    false);
+				emit status(tr("Hearing %1").arg(audio.isEmpty() ? tr("the stream") : audio), Session::Level::Ok);
 			else
-				emit status(audio.isEmpty() ? tr("Live, but no audio is reaching VocalStack yet") : audio,
-					    true);
+				emit status(audio.isEmpty() ? tr("Waiting for audio…") : audio, Session::Level::Warn);
 		}
 	});
 }

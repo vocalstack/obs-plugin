@@ -7,6 +7,8 @@
 #include <QMainWindow>
 #include <QPainter>
 #include <QPainterPath>
+#include <QTextDocument>
+#include <QTextOption>
 
 CaptionOverlay *CaptionOverlay::attach()
 {
@@ -39,14 +41,25 @@ CaptionOverlay::CaptionOverlay(QWidget *mainWindow, QWidget *preview_)
 	follow();
 }
 
-void CaptionOverlay::setCaption(const QString &text)
+void CaptionOverlay::setCaption(const QString &who, const QString &text)
 {
+	speaker = text.isEmpty() ? QString() : who;
 	caption = text;
 	update();
 }
 
-// Wrapped to most of the preview's width, centred near its bottom, on a
-// dark rounded box: readable over any picture.
+// The caption as rich text: the speaker in brand blue, then the words.
+static QString caption_html(const QString &speaker, const QString &words, bool cut)
+{
+	QString html;
+	if (!speaker.isEmpty())
+		html = QStringLiteral("<span style='color:#55abe5; font-weight:600;'>%1:</span> ").arg(speaker.toHtmlEscaped());
+	return html + (cut ? QStringLiteral("…") : QString()) + words.toHtmlEscaped();
+}
+
+// At most two lines, the newest words kept, centred near the bottom of the
+// preview on VocalStack navy: readable over any picture without covering
+// the scene.
 void CaptionOverlay::paintEvent(QPaintEvent *)
 {
 	if (caption.isEmpty())
@@ -55,21 +68,39 @@ void CaptionOverlay::paintEvent(QPaintEvent *)
 	p.setRenderHint(QPainter::Antialiasing);
 	QFont font = p.font();
 	font.setPixelSize(qBound(14, height() / 22, 32));
-	p.setFont(font);
-
 	const int pad = font.pixelSize() / 2;
 	const int maxWidth = width() * 8 / 10;
-	const QRect text = p.fontMetrics().boundingRect(QRect(0, 0, maxWidth, height()),
-							 Qt::AlignHCenter | Qt::TextWordWrap, caption);
-	QRect box(0, 0, text.width() + 2 * pad, text.height() + pad);
-	box.moveCenter(QPoint(width() / 2, 0));
-	box.moveBottom(height() - height() / 14);
+	const QFontMetrics fm(font);
 
+	QTextDocument doc;
+	doc.setDefaultFont(font);
+	doc.setDocumentMargin(0);
+	doc.setDefaultStyleSheet("body { color: white; }");
+	QTextOption opt(Qt::AlignHCenter);
+	opt.setWrapMode(QTextOption::WordWrap);
+	doc.setDefaultTextOption(opt);
+	doc.setTextWidth(maxWidth);
+	// Older words go first until two lines hold the rest.
+	QStringList words = caption.split(' ', Qt::SkipEmptyParts);
+	bool cut = false;
+	doc.setHtml(caption_html(speaker, words.join(' '), false));
+	while (doc.size().height() > 2.2 * fm.lineSpacing() && words.size() > 1) {
+		words.removeFirst();
+		cut = true;
+		doc.setHtml(caption_html(speaker, words.join(' '), cut));
+	}
+	doc.setTextWidth(qMin<qreal>(maxWidth, doc.idealWidth() + 1));
+	const QSizeF size = doc.size();
+
+	QRectF box(0, 0, size.width() + 2 * pad, size.height() + pad);
+	box.moveCenter(QPointF(width() / 2.0, 0));
+	box.moveBottom(height() - height() / 14.0);
 	QPainterPath path;
-	path.addRoundedRect(box, 6, 6);
-	p.fillPath(path, QColor(0, 0, 0, 180));
-	p.setPen(Qt::white);
-	p.drawText(box, Qt::AlignCenter | Qt::TextWordWrap, caption);
+	const qreal radius = pad * 0.6;
+	path.addRoundedRect(box, radius, radius);
+	p.fillPath(path, QColor(10, 12, 41, 190));
+	p.translate(box.left() + pad, box.top() + pad / 2.0);
+	doc.drawContents(&p);
 }
 
 bool CaptionOverlay::eventFilter(QObject *, QEvent *event)

@@ -16,7 +16,9 @@ public:
 	// widget is not found (a frontend that renamed it).
 	static CaptionOverlay *attach();
 
-	void setCaption(const QString &text);
+	// `speaker` ("Speaker 2", a name) leads the words in brand blue; empty
+	// words clear the caption.
+	void setCaption(const QString &speaker, const QString &text);
 
 protected:
 	bool eventFilter(QObject *watched, QEvent *event) override;
@@ -27,5 +29,5 @@ private:
 	void follow();
 
 	QPointer<QWidget> preview;
-	QString caption;
+	QString speaker, caption;
 };
