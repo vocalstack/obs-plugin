@@ -143,7 +143,11 @@ Dock::Dock(QWidget *parent)
 	// Navigation, not an action: quiet, so the eye goes to the form.
 	auto *dashboard = ui::linkButton(tr("Dashboard ↗"), nullptr, "muted");
 	dashboard->setToolTip(tr("Open the VocalStack dashboard"));
-	connect(dashboard, &QToolButton::clicked, this, [this]() { QDesktopServices::openUrl(QUrl(api->appBase())); });
+	// While transcribing, straight to that transcription's live page.
+	connect(dashboard, &QToolButton::clicked, this, [this]() {
+		const bool live = session->state() != Session::State::Idle && !settings.transcriptionId.isEmpty();
+		QDesktopServices::openUrl(QUrl(api->appBase() + (live ? "/transcriptions/" + settings.transcriptionId + "/live" : QString())));
+	});
 	head->addWidget(dashboard, 0, Qt::AlignVCenter);
 	layout->addLayout(head);
 	layout->addSpacing(GAP_SECTION);
