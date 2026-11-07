@@ -17,6 +17,7 @@ class QLineEdit;
 class QMainWindow;
 class QPushButton;
 class QStackedWidget;
+class QTimer;
 class QToolButton;
 class Updater;
 class WarmPing;
@@ -60,7 +61,12 @@ private:
 	void useKey();
 	void loadLists();
 	void loadBroadcasts();
-	void newBroadcast();
+	// The broadcast editor, a page of its own: a new broadcast (`id`
+	// empty) or the one with `id`, as on VocalStack's dashboard.
+	QWidget *buildBroadcastEditor();
+	void openBroadcastEditor(const QString &id);
+	void saveBroadcast();
+	void updateBroadcastEditor();
 	void copyBroadcastLink();
 	void copyTranscriptLink();
 	void openTranscription();
@@ -86,10 +92,28 @@ private:
 	// "Check for updates" was clicked: its answer shows beside it.
 	bool checkWanted = false;
 	QPushButton *checkUpdatesButton;
+	// The update notice: a spinner while it downloads or installs, a check
+	// once installed, and × to put it away until it says something else.
+	QTimer *updateSpin;
+	int updateSpinFrame = 0;
+	QString updateNoticeText, updateDismissed;
+	QToolButton *updateDismiss;
+	// The broadcast editor.
+	QString editingId, editingOrigCode;
+	bool editCodeTouched = false, editWasPrivate = false;
+	QLabel *edTitle, *edLinkPrefix, *edAccessNote, *edLinkNote, *edError;
+	QLineEdit *edName, *edCode, *edPassword;
+	QComboBox *edAccess, *edSpoken, *edLabels;
+	QPushButton *edSave;
+	QToolButton *editBroadcastButton, *addBroadcastButton;
 	QLabel *checkUpdatesResult;
 	// Each broadcast's link and capture settings, by id, from the last load.
 	QHash<QString, QString> broadcastLinks;
 	QHash<QString, QJsonObject> broadcastSettings;
+	// Each broadcast as listed, by id (for the editor).
+	QHash<QString, QJsonObject> broadcastObjects;
+	// The languages a broadcast can be spoken in: (name, code), sorted.
+	QList<QPair<QString, QString>> spokenLanguages;
 
 	QStackedWidget *pages;
 	// Signed out.

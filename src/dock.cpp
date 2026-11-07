@@ -21,12 +21,12 @@
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QHostInfo>
-#include <QInputDialog>
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
 #include <QRegularExpression>
 #include <QUrl>
+#include <QUuid>
 #include <QMainWindow>
 #include <QPixmap>
 #include <QPushButton>
@@ -93,6 +93,7 @@ Dock::Dock(QWidget *parent)
 	pages->addWidget(buildSignedOut());
 	pages->addWidget(buildSettings()); // before the signed-in page uses its widgets
 	pages->addWidget(buildSignedIn());
+	pages->addWidget(buildBroadcastEditor());
 
 	connect(login, &ConnectLogin::finished, this,
 		[this](const QString &key, const QString &account, const QString &error) {
@@ -218,10 +219,15 @@ QWidget *Dock::buildSignedIn()
 	connect(refresh, &QToolButton::clicked, this, &Dock::loadBroadcasts);
 	// A Connect key that reaches only what it creates sees no broadcast
 	// made elsewhere: it can make its own.
-	auto *add = new QToolButton;
-	add->setText("+");
+	auto *add = addBroadcastButton = new QToolButton;
+	add->setText(tr("+ New"));
 	add->setToolTip(tr("New broadcast"));
-	connect(add, &QToolButton::clicked, this, &Dock::newBroadcast);
+	connect(add, &QToolButton::clicked, this, [this]() { openBroadcastEditor(QString()); });
+	editBroadcastButton = new QToolButton;
+	editBroadcastButton->setText(tr("Edit"));
+	editBroadcastButton->setToolTip(tr("Edit this broadcast: name, link, visibility, language, speaker labels"));
+	connect(editBroadcastButton, &QToolButton::clicked, this,
+		[this]() { openBroadcastEditor(broadcastBox->currentData().toString()); });
 	copyBroadcastButton = new QToolButton;
 	copyBroadcastButton->setText(tr("Copy link"));
 	copyBroadcastButton->setToolTip(tr("Copy the broadcast's link, for listeners"));
@@ -232,6 +238,7 @@ QWidget *Dock::buildSignedIn()
 	listenersLabel->setStyleSheet("color: #8b8b96;");
 	listenersLabel->hide();
 	broadcastRow->addWidget(add);
+	broadcastRow->addWidget(editBroadcastButton);
 	broadcastRow->addWidget(refresh);
 	broadcastRow->addWidget(copyBroadcastButton);
 	broadcastRow->addStretch(1);
@@ -319,8 +326,24 @@ QWidget *Dock::buildSignedIn()
 		updateWanted = true;
 		showUpdate();
 	});
+	updateDismiss = new QToolButton;
+	updateDismiss->setText(QStringLiteral("✕"));
+	updateDismiss->setToolTip(tr("Dismiss"));
+	updateDismiss->setAutoRaise(true);
+	updateDismiss->hide();
+	connect(updateDismiss, &QToolButton::clicked, this, [this]() {
+		updateDismissed = updateNoticeText;
+		showUpdate();
+	});
+	updateSpin = new QTimer(this);
+	updateSpin->setInterval(90);
+	connect(updateSpin, &QTimer::timeout, this, [this]() {
+		updateSpinFrame++;
+		showUpdate();
+	});
 	updateRow->addWidget(updateNotice, 1);
 	updateRow->addWidget(updateButton);
+	updateRow->addWidget(updateDismiss, 0, Qt::AlignTop);
 	v->addLayout(updateRow);
 
 	// Who is signed in, at the foot, with the settings.
@@ -504,10 +527,26 @@ void Dock::showUpdate()
 		}
 		text += QStringLiteral(" <a href=\"%1\">%2</a>").arg(PLUGIN_PAGE, tr("Download"));
 	}
-	updateNotice->setText(text);
+	// Working: a spinner before the words. Done: a check.
+	const bool working = step == Updater::Step::Downloading || step == Updater::Step::Installing;
+	const bool done = step == Updater::Step::Installed || step == Updater::Step::OnExit;
+	if (working != updateSpin->isActive())
+		working ? updateSpin->start() : updateSpin->stop();
+	updateNoticeText = text;
+	const bool dismissed = !text.isEmpty() && text == updateDismissed && !working;
+	static const QStringList frames{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+	// The words are rich text already (the Download link).
+	QString shown = text;
+	if (working)
+		shown = QStringLiteral("<span style='font-family: monospace;'>%1</span>&nbsp;&nbsp;%2")
+				.arg(frames.at(updateSpinFrame % frames.size()), text);
+	else if (done)
+		shown = QStringLiteral("<span style='color: #3fb950; font-weight: bold;'>✓</span>&nbsp;&nbsp;%1").arg(text);
+	updateNotice->setText(shown);
 	updateNotice->setStyleSheet(problem ? "color: #f0a63a;" : "");
-	updateNotice->setVisible(!text.isEmpty());
-	updateButton->setVisible(pending && !settings.autoUpdate && !updateWanted);
+	updateNotice->setVisible(!text.isEmpty() && !dismissed);
+	updateDismiss->setVisible(!text.isEmpty() && !dismissed && !working);
+	updateButton->setVisible(pending && !settings.autoUpdate && !updateWanted && !dismissed);
 	updateButton->setEnabled(pending);
 	// An unsupported version does not start.
 	const bool blocked = age == Updater::Age::Unsupported && step != Updater::Step::Installed;
@@ -522,6 +561,8 @@ void Dock::updateLinks()
 	openButton->setEnabled(tx);
 	copyLinkButton->setEnabled(tx);
 	copyBroadcastButton->setEnabled(broadcastLinks.contains(settings.broadcastId));
+	editBroadcastButton->setEnabled(broadcastObjects.contains(settings.broadcastId) &&
+					session->state() == Session::State::Idle);
 }
 
 void Dock::openTranscription()
@@ -679,7 +720,8 @@ void Dock::loadLists()
 
 		spokenBox->clear();
 		spokenBox->addItem(tr("Detect"), QString());
-		for (const auto &[name, code] : sorted(o.value("transcription").toArray()))
+		spokenLanguages = sorted(o.value("transcription").toArray());
+		for (const auto &[name, code] : spokenLanguages)
 			spokenBox->addItem(name, code);
 		spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(settings.spokenLanguage)));
 
@@ -697,6 +739,7 @@ void Dock::loadBroadcasts()
 		}
 		broadcastLinks.clear();
 		broadcastSettings.clear();
+		broadcastObjects.clear();
 		for (const QJsonValue v : doc.object().value("broadcasts").toArray()) {
 			const QJsonObject b = v.toObject();
 			if (b.value("archivedAt").isString() || b.value("lifecycle").toString() == "archived")
@@ -704,6 +747,7 @@ void Dock::loadBroadcasts()
 			broadcastBox->addItem(b.value("name").toString(), b.value("id").toString());
 			broadcastLinks.insert(b.value("id").toString(), b.value("shareUrl").toString());
 			broadcastSettings.insert(b.value("id").toString(), b.value("settings").toObject());
+			broadcastObjects.insert(b.value("id").toString(), b);
 		}
 		const int at = broadcastBox->findData(settings.broadcastId);
 		broadcastBox->setCurrentIndex(qMax(0, at));
@@ -716,24 +760,260 @@ void Dock::loadBroadcasts()
 	});
 }
 
-void Dock::newBroadcast()
+// A link made from a name, as the dashboard makes it: lower case, accents
+// dropped, spaces to dashes, letters, digits and dashes only, at most 48.
+static const int CODE_MAX = 48;
+static QString slugify(const QString &title)
 {
-	bool ok = false;
-	const QString name = QInputDialog::getText(this, tr("New broadcast"), tr("Name"), QLineEdit::Normal,
-						   QString(), &ok)
-				     .trimmed();
-	if (!ok || name.isEmpty())
+	QString r;
+	for (const QChar c : title.trimmed().normalized(QString::NormalizationForm_D))
+		if (c.category() != QChar::Mark_NonSpacing)
+			r += c;
+	r = r.toLower();
+	r.replace(QRegularExpression("[\\s/]+"), "-");
+	r.remove(QRegularExpression("[^a-z0-9-]"));
+	r.replace(QRegularExpression("-+"), "-");
+	if (r.size() > CODE_MAX) {
+		r = r.left(CODE_MAX + 1);
+		const int cut = int(r.lastIndexOf('-'));
+		r = (cut >= 3 ? r.left(cut) : r.left(CODE_MAX));
+		while (r.endsWith('-'))
+			r.chop(1);
+	}
+	return r;
+}
+
+// Where a broadcast's link lives (live.vocalstack.com), from a link
+// VocalStack gave.
+static QString share_host(const QHash<QString, QString> &links)
+{
+	for (const QString &url : links) {
+		const QUrl u(url);
+		if (!u.host().isEmpty())
+			return u.host();
+	}
+	return QStringLiteral("live.vocalstack.com");
+}
+
+QWidget *Dock::buildBroadcastEditor()
+{
+	auto *page = new QWidget;
+	auto *v = new QVBoxLayout(page);
+	v->setContentsMargins(0, 0, 0, 0);
+
+	auto *top = new QHBoxLayout;
+	auto *back = new QPushButton(tr("‹ Back"));
+	connect(back, &QPushButton::clicked, this, [this]() { pages->setCurrentIndex(2); });
+	edTitle = new QLabel;
+	edTitle->setStyleSheet("font-weight: bold;");
+	top->addWidget(back);
+	top->addWidget(edTitle, 1);
+	v->addLayout(top);
+
+	auto *about = new QGroupBox(tr("Broadcast"));
+	auto *form = new QFormLayout(about);
+	form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	edName = new QLineEdit;
+	edName->setPlaceholderText(tr("A name for your broadcast…"));
+	connect(edName, &QLineEdit::textEdited, this, [this]() {
+		if (editingId.isEmpty() && !editCodeTouched)
+			edCode->setText(slugify(edName->text()));
+		updateBroadcastEditor();
+	});
+	form->addRow(tr("Name"), edName);
+
+	auto *linkRow = new QHBoxLayout;
+	edLinkPrefix = new QLabel;
+	edLinkPrefix->setStyleSheet("color: #8b8b96;");
+	edCode = new QLineEdit;
+	edCode->setPlaceholderText("my-broadcast-link");
+	edCode->setMaxLength(CODE_MAX);
+	connect(edCode, &QLineEdit::textEdited, this, [this](const QString &text) {
+		edLinkNote->clear();
+		const QString slug = slugify(text);
+		editCodeTouched = !slug.isEmpty();
+		if (!editCodeTouched && editingId.isEmpty())
+			edCode->setText(slugify(edName->text()));
+		updateBroadcastEditor();
+	});
+	linkRow->setSpacing(0);
+	linkRow->addWidget(edLinkPrefix);
+	linkRow->addWidget(edCode, 1);
+	form->addRow(tr("Link"), linkRow);
+	edLinkNote = new QLabel;
+	edLinkNote->setWordWrap(true);
+	edLinkNote->setTextFormat(Qt::RichText);
+	edLinkNote->setStyleSheet("color: #8b8b96;");
+	// A suggestion offered for a link that is taken: a click takes it.
+	connect(edLinkNote, &QLabel::linkActivated, this, [this](const QString &code) {
+		edCode->setText(code);
+		edLinkNote->clear();
+		editCodeTouched = true;
+		edError->clear();
+		updateBroadcastEditor();
+	});
+	form->addRow(QString(), edLinkNote);
+
+	edAccess = new QComboBox;
+	edAccess->addItem(tr("Public"), "public");
+	edAccess->addItem(tr("Private"), "private");
+	connect(edAccess, &QComboBox::activated, this, [this]() { updateBroadcastEditor(); });
+	form->addRow(tr("Visibility"), edAccess);
+	edPassword = new QLineEdit;
+	edPassword->setEchoMode(QLineEdit::Password);
+	connect(edPassword, &QLineEdit::textEdited, this, [this]() { updateBroadcastEditor(); });
+	form->addRow(QString(), edPassword);
+	edAccessNote = new QLabel;
+	edAccessNote->setWordWrap(true);
+	edAccessNote->setStyleSheet("color: #8b8b96;");
+	form->addRow(QString(), edAccessNote);
+	v->addWidget(about);
+
+	auto *defaults = new QGroupBox(tr("Defaults"));
+	auto *df = new QFormLayout(defaults);
+	df->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	edSpoken = new QComboBox;
+	df->addRow(tr("Spoken language"), edSpoken);
+	auto *spokenNote = new QLabel(tr("Auto detect gives each spoken segment its own detected language, so speakers "
+					 "can switch languages mid-conversation."));
+	spokenNote->setWordWrap(true);
+	spokenNote->setStyleSheet("color: #8b8b96;");
+	df->addRow(QString(), spokenNote);
+	edLabels = new QComboBox;
+	edLabels->addItem(tr("When needed"), "auto");
+	edLabels->addItem(tr("On"), "on");
+	edLabels->addItem(tr("Off"), "off");
+	df->addRow(tr("Speaker labels"), edLabels);
+	v->addWidget(defaults);
+
+	edError = new QLabel;
+	edError->setWordWrap(true);
+	edError->setStyleSheet("color: #ff6b6b;");
+	v->addWidget(edError);
+	edSave = new QPushButton;
+	edSave->setMinimumHeight(32);
+	connect(edSave, &QPushButton::clicked, this, &Dock::saveBroadcast);
+	connect(edName, &QLineEdit::returnPressed, this, &Dock::saveBroadcast);
+	v->addWidget(edSave);
+	v->addStretch(1);
+	return page;
+}
+
+// The editor filled from the broadcast with `id`, or empty for a new one.
+void Dock::openBroadcastEditor(const QString &id)
+{
+	const QJsonObject b = broadcastObjects.value(id);
+	editingId = b.isEmpty() ? QString() : id;
+	const bool editing = !editingId.isEmpty();
+	const QJsonObject bs = b.value("settings").toObject();
+	editingOrigCode = b.value("code").toString();
+	editWasPrivate = b.value("access").toString() == "private";
+	editCodeTouched = false;
+	edTitle->setText(editing ? tr("Edit broadcast") : tr("New broadcast"));
+	edSave->setText(editing ? tr("Save changes") : tr("Create broadcast"));
+	edName->setText(b.value("name").toString());
+	edLinkPrefix->setText(share_host(broadcastLinks) + "/");
+	edCode->setText(editingOrigCode);
+	edAccess->setCurrentIndex(editWasPrivate ? 1 : 0);
+	edPassword->clear();
+	edSpoken->clear();
+	edSpoken->addItem(tr("Auto detect"), QString());
+	for (const auto &[name, code] : spokenLanguages)
+		edSpoken->addItem(name, code);
+	edSpoken->setCurrentIndex(qMax(0, edSpoken->findData(editing ? bs.value("spokenLanguage").toString()
+								      : settings.spokenLanguage)));
+	edLabels->setCurrentIndex(
+		qMax(0, edLabels->findData(bs.value("speakerLabels").toString(editing ? "auto" : settings.speakerLabels))));
+	edError->clear();
+	edLinkNote->clear();
+	updateBroadcastEditor();
+	pages->setCurrentIndex(3);
+	edName->setFocus();
+}
+
+void Dock::updateBroadcastEditor()
+{
+	const bool isPrivate = edAccess->currentData().toString() == "private";
+	const bool editing = !editingId.isEmpty();
+	edPassword->setVisible(isPrivate);
+	edPassword->setPlaceholderText(editing && editWasPrivate ? tr("Leave empty to keep the password")
+								 : tr("A password, at least three characters"));
+	edAccessNote->setText(isPrivate ? tr("Only people with the password can open the link. They are asked for it "
+					     "before the transcript appears.")
+					: tr("Anyone with the link can access the broadcast."));
+	const QString code = edCode->text();
+	if (!edLinkNote->text().contains("<a ")) // a taken link's suggestions stay until one is picked
+		edLinkNote->setText(code.size() > 0 && code.size() < 6
+					    ? tr("Links need at least six characters.")
+					    : tr("Share this link with your audience. The transcript and translations "
+						 "appear there while you record."));
+}
+
+void Dock::saveBroadcast()
+{
+	const bool editing = !editingId.isEmpty();
+	const QString name = edName->text().trimmed();
+	const QString code = slugify(edCode->text());
+	const bool isPrivate = edAccess->currentData().toString() == "private";
+	const QString password = edPassword->text();
+	if (name.isEmpty()) {
+		edError->setText(tr("Give the broadcast a name first."));
 		return;
-	api->post("/v1/broadcasts", QJsonObject{{"name", name}},
-		  [this](int, const QJsonDocument &doc, const QString &error) {
-			  if (!error.isEmpty()) {
-				  setStatus(sessionStatus, tr("Could not create the broadcast: %1").arg(error), true);
-				  return;
-			  }
-			  settings.broadcastId = doc.object().value("id").toString();
-			  settings.save();
-			  loadBroadcasts();
-		  });
+	}
+	if (code.size() < 6) {
+		edError->setText(tr("The broadcast link needs at least six characters."));
+		return;
+	}
+	if (isPrivate && password.size() < 3 && !(editing && editWasPrivate && password.isEmpty())) {
+		edError->setText(tr("A private broadcast needs a password of at least three characters."));
+		return;
+	}
+	QJsonObject bsettings{
+		{"spokenLanguage", edSpoken->currentData().toString().isEmpty() ? QJsonValue()
+										: QJsonValue(edSpoken->currentData().toString())},
+		{"speakerLabels", edLabels->currentData().toString()},
+	};
+	QJsonObject body{{"name", name}, {"access", isPrivate ? "private" : "public"}};
+	if (isPrivate && !password.isEmpty())
+		body.insert("password", password);
+	else if (!isPrivate)
+		body.insert("password", QJsonValue());
+	if (!editing || code != editingOrigCode)
+		body.insert("code", code);
+	if (!editing) {
+		// As the dashboard makes one: titles, summaries and voices on.
+		for (const char *f : {"summary", "title", "summaryTranslations", "voice"})
+			bsettings.insert(f, true);
+	}
+	body.insert("settings", bsettings);
+	edSave->setEnabled(false);
+	edError->clear();
+	auto done = [this, editing](int status, const QJsonDocument &doc, const QString &error) {
+		edSave->setEnabled(true);
+		if (!error.isEmpty()) {
+			const QJsonArray suggestions = Api::errorDetails(doc).value("suggestions").toArray();
+			if (status == 409 && !suggestions.isEmpty()) {
+				QStringList links;
+				for (const QJsonValue v : suggestions)
+					links.append(QStringLiteral("<a href=\"%1\">%1</a>").arg(v.toString().toHtmlEscaped()));
+				edLinkNote->setText(tr("That link is taken. Try %1").arg(links.join(", ")));
+				edError->setText(tr("That link is taken. Pick another."));
+			} else {
+				edError->setText(editing ? tr("Could not save the broadcast: %1").arg(error)
+							 : tr("Could not create the broadcast: %1").arg(error));
+			}
+			return;
+		}
+		settings.broadcastId = doc.object().value("id").toString();
+		settings.save();
+		pages->setCurrentIndex(2);
+		setStatus(sessionStatus, editing ? tr("Broadcast saved") : tr("Broadcast created"), false);
+		loadBroadcasts(); // and its defaults become the dock's
+	};
+	if (editing)
+		api->patch("/v1/broadcasts/" + editingId, body, done);
+	else
+		api->post("/v1/broadcasts", body, QUuid::createUuid().toString(QUuid::WithoutBraces), done);
 }
 
 void Dock::onState(Session::State s)
@@ -744,7 +1024,8 @@ void Dock::onState(Session::State s)
 								  : tr("Stop transcribing"));
 	startButton->setEnabled(s != Session::State::Stopping);
 	updateFollowHint();
-	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, spokenBox, sendBox, speakersBox, lockBox, nameEdit})
+	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, spokenBox, sendBox, speakersBox, lockBox, nameEdit,
+							  addBroadcastButton})
 		w->setEnabled(idle);
 	updateLinks();
 	showUpdate(); // idle again: an update waiting may install
