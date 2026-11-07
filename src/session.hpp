@@ -47,10 +47,10 @@ signals:
 	// The words to caption, and who said them ("Speaker 2", a name) once
 	// more than one speaker has been heard; empty words clear it.
 	void caption(const QString &speaker, const QString &text);
-	// Warnings that stay until the next Start (the spoken language does
-	// not match the speech, the engine stopped), one per item; empty
-	// hides them.
-	void notices(const QStringList &notes);
+	// Notes that stay until the next Start, one per item: warnings (the
+	// speech is not the spoken language set, the plan's cutoff is near)
+	// and errors (VocalStack stopped transcribing). Empty hides them.
+	void notices(const QStringList &warnings, const QStringList &errors);
 	// VocalStack refused the caption language (its limit of languages a
 	// recording, say): captions went back to the spoken language.
 	void captionLanguageRefused(const QString &message);
@@ -122,4 +122,6 @@ private:
 	// A resume is on its way for a recording VocalStack paused.
 	bool resuming = false;
 	QString languageNote, feedNote;
+	// The feed note is an error (VocalStack stopped), not a warning.
+	bool feedError = false;
 };

@@ -30,7 +30,7 @@ struct Theme {
 
 // Spinner frames, a check, the gaps of the 4 px grid.
 extern const QStringList SPINNER;
-constexpr int GAP_LABEL = 4, GAP_FIELD = 14, GAP_SECTION = 20, MARGIN = 12;
+constexpr int GAP_LABEL = 4, GAP_FIELD = 16, GAP_SECTION = 20, MARGIN = 12;
 
 // Restyle `w` after a property it is styled by changed.
 void repolish(QWidget *w);
@@ -42,10 +42,15 @@ QLabel *eyebrow(const QString &text, QWidget *parent = nullptr);
 QLabel *muted(const QString &text = QString(), QWidget *parent = nullptr);
 // A page title (1.15×, semibold).
 QLabel *title(const QString &text, QWidget *parent = nullptr);
-// A label and its control, stacked, as one block of a page.
-void field(QVBoxLayout *into, const QString &label, QWidget *control, QWidget *note = nullptr);
-// A secondary action drawn as brand-coloured text.
-QToolButton *linkButton(const QString &text, QWidget *parent = nullptr);
+// A label and its control (and a note), stacked: one block of a page, to
+// show or hide as one.
+QWidget *field(QVBoxLayout *into, const QString &label, QWidget *control, QWidget *note = nullptr);
+// A hairline across the page.
+QFrame *rule(QWidget *parent = nullptr);
+// A secondary action drawn as brand-coloured text ("muted": grey text).
+QToolButton *linkButton(const QString &text, QWidget *parent = nullptr, const char *tone = nullptr);
+// Buttons take focus from the keyboard only, so a click leaves no ring.
+void tabFocusOnly(QWidget *root);
 // The button says `text` for a moment (✓ Copied), then what it said.
 void flash(QAbstractButton *button, const QString &text, int ms = 1500);
 

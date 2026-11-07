@@ -18,19 +18,21 @@
 #include <QDesktopServices>
 #include <QDockWidget>
 #include <QEvent>
-#include <QFontDatabase>
 #include <QGridLayout>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHostInfo>
 #include <QJsonArray>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QShortcut>
 #include <QStackedWidget>
 #include <QTimer>
 #include <QToolButton>
@@ -38,6 +40,7 @@
 #include <QUuid>
 #include <QVBoxLayout>
 
+#include <cstring>
 #include <initializer_list>
 
 using ui::GAP_FIELD;
@@ -47,29 +50,28 @@ using ui::GAP_SECTION;
 // Where an update is read about and downloaded by hand: the plugin's page
 // on the VocalStack website.
 static const char *PLUGIN_PAGE = "https://vocalstack.com/obs-studio-transcription-plugin/";
-// The broadcast list's last entry, which opens the editor for a new one.
+// Items of the broadcast list that are not broadcasts.
 static const char *NEW_BROADCAST = "__new__";
+static const char *LOADING = "__loading__";
 // The list is asked for again when it opens, at most this often.
 static const qint64 BROADCASTS_FRESH_MS = 10000;
+// Below this width the two transcript buttons stack.
+static const int NARROW = 340;
 
 // The VocalStack logo, at 2x for sharp screens: white on OBS's dark themes,
 // the dark one on a light theme.
-static QLabel *logo(QWidget *parent)
+static QPixmap logo_pixmap(bool dark)
 {
-	const bool dark = parent->palette().window().color().lightness() < 128;
 	char *path = obs_module_file(dark ? "logo-white@2x.png" : "logo@2x.png");
 	QPixmap pm(QString::fromUtf8(path ? path : ""));
 	bfree(path);
-	auto *label = new QLabel(parent);
-	if (!pm.isNull()) {
+	if (!pm.isNull())
 		pm.setDevicePixelRatio(2);
-		label->setPixmap(pm);
-	}
-	label->setToolTip(QStringLiteral("VocalStack"));
-	return label;
+	return pm;
 }
 
-// A link inside rich text, in the theme's brand colour.
+// A link inside rich text, in the theme's brand colour (set again when the
+// theme changes).
 static QString anchor(const QWidget *w, const QString &href, const QString &text)
 {
 	return QStringLiteral("<a href=\"%1\" style=\"color:%2; text-decoration:none;\">%3</a>")
@@ -101,6 +103,25 @@ static QScrollArea *scrolling(QWidget *content)
 	return area;
 }
 
+// The computer's name, without macOS's .local.
+static QString host_name()
+{
+	QString host = QHostInfo::localHostName();
+	if (host.endsWith(".local"))
+		host.chop(6);
+	return host;
+}
+
+// "42 min", "1 h 05 min", "40 s".
+static QString duration_text(qint64 secs)
+{
+	if (secs < 60)
+		return QObject::tr("%1 s").arg(secs);
+	if (secs < 3600)
+		return QObject::tr("%1 min").arg(secs / 60);
+	return QObject::tr("%1 h %2 min").arg(secs / 3600).arg((secs / 60) % 60, 2, 10, QChar('0'));
+}
+
 Dock::Dock(QWidget *parent)
 	: QWidget(parent),
 	  api(new Api(this)),
@@ -115,12 +136,14 @@ Dock::Dock(QWidget *parent)
 	layout->setSpacing(0);
 	layout->addSpacing(8);
 	auto *head = new QHBoxLayout;
-	head->addWidget(logo(this), 0, Qt::AlignVCenter);
+	logoLabel = new QLabel;
+	logoLabel->setToolTip(QStringLiteral("VocalStack"));
+	head->addWidget(logoLabel, 0, Qt::AlignVCenter);
 	head->addStretch(1);
-	auto *dashboard = new QPushButton(tr("Dashboard ↗"));
-	dashboard->setProperty("role", "secondary");
+	// Navigation, not an action: quiet, so the eye goes to the form.
+	auto *dashboard = ui::linkButton(tr("Dashboard ↗"), nullptr, "muted");
 	dashboard->setToolTip(tr("Open the VocalStack dashboard"));
-	connect(dashboard, &QPushButton::clicked, this, [this]() { QDesktopServices::openUrl(QUrl(api->appBase())); });
+	connect(dashboard, &QToolButton::clicked, this, [this]() { QDesktopServices::openUrl(QUrl(api->appBase())); });
 	head->addWidget(dashboard, 0, Qt::AlignVCenter);
 	layout->addLayout(head);
 	layout->addSpacing(GAP_SECTION);
@@ -134,6 +157,7 @@ Dock::Dock(QWidget *parent)
 	pages->addWidget(buildSignedIn());
 	pages->addWidget(buildBroadcastEditor());
 	applyTheme();
+	ui::tabFocusOnly(this);
 
 	connect(updater, &Updater::changed, this, &Dock::showUpdate);
 	updater->setMayInstall([this]() { return session->state() == Session::State::Idle; });
@@ -157,6 +181,7 @@ Dock::Dock(QWidget *parent)
 	connect(session, &Session::notices, this, &Dock::showNotices);
 	connect(session, &Session::spokenLanguageChanged, this, [this](const QString &lang) {
 		spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(lang)));
+		updateLiveSummary();
 	});
 	connect(session, &Session::listeners, this, [this](int n) {
 		liveListeners->setVisible(n >= 0);
@@ -184,15 +209,20 @@ Dock::Dock(QWidget *parent)
 	onState(session->state());
 }
 
-// One stylesheet for the dock, from the theme OBS is in; again when OBS's
-// theme changes between dark and light.
+// One stylesheet for the dock, from the theme OBS is in; again, with the
+// logo and the links, when OBS's theme changes between dark and light.
 void Dock::applyTheme()
 {
 	const ui::Theme theme = ui::Theme::of(this);
 	darkTheme = theme.dark;
 	setStyleSheet(theme.stylesheet());
+	logoLabel->setPixmap(logo_pixmap(theme.dark));
 	followHint->setText(tr("Starts when OBS starts streaming or recording · %1")
 				    .arg(anchor(this, "settings", tr("Change"))));
+	joinLabel->setText(tr("No account? %1").arg(anchor(this, "join", tr("Create one free"))));
+	if (edLinkNote->text().contains("<a "))
+		edLinkNote->clear();
+	showUpdate();
 }
 
 void Dock::changeEvent(QEvent *event)
@@ -200,6 +230,12 @@ void Dock::changeEvent(QEvent *event)
 	QWidget::changeEvent(event);
 	if (event->type() == QEvent::PaletteChange && ui::Theme::of(this).dark != darkTheme)
 		applyTheme();
+}
+
+void Dock::resizeEvent(QResizeEvent *event)
+{
+	QWidget::resizeEvent(event);
+	transcriptButtons->setDirection(width() < NARROW ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
 }
 
 void Dock::showEvent(QShowEvent *event)
@@ -219,43 +255,45 @@ void Dock::hideEvent(QHideEvent *event)
 QWidget *Dock::pageHeader(QLabel **titleLabel, QLabel **subtitleLabel)
 {
 	auto *w = new QWidget;
-	auto *h = new QHBoxLayout(w);
-	h->setContentsMargins(0, 0, 0, 0);
-	h->setSpacing(6);
-	auto *back = new QToolButton;
-	back->setText(QStringLiteral("‹"));
-	back->setToolTip(tr("Back"));
-	back->setAutoRaise(true);
-	back->setFixedSize(28, 28);
-	QFont bf = back->font();
-	bf.setPointSizeF(bf.pointSizeF() * 1.6);
-	back->setFont(bf);
-	connect(back, &QToolButton::clicked, this, [this]() { pages->setCurrentIndex(Main); });
-	h->addWidget(back, 0, Qt::AlignTop);
-	auto *texts = new QVBoxLayout;
-	texts->setSpacing(2);
+	auto *v = new QVBoxLayout(w);
+	v->setContentsMargins(0, 0, 0, 0);
+	v->setSpacing(6);
+	auto *back = ui::linkButton(tr("‹  Back"), nullptr, "muted");
+	back->setToolTip(tr("Back (Esc)"));
+	connect(back, &QToolButton::clicked, this, &Dock::goBack);
+	v->addWidget(back, 0, Qt::AlignLeft);
 	*titleLabel = ui::title(QString());
-	texts->addWidget(*titleLabel);
+	v->addWidget(*titleLabel);
 	if (subtitleLabel) {
 		*subtitleLabel = ui::muted();
-		texts->addWidget(*subtitleLabel);
+		v->addWidget(*subtitleLabel);
 	}
-	h->addLayout(texts, 1);
 	return w;
+}
+
+void Dock::goBack()
+{
+	if (pages->currentIndex() == Editor && editDirty &&
+	    QMessageBox::question(this, tr("Discard changes?"), tr("Discard your changes to this broadcast?"),
+				  QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Discard)
+		return;
+	editDirty = false;
+	pages->setCurrentIndex(Main);
 }
 
 // ---------------------------------------------------------------- signed out
 
 QWidget *Dock::buildSignedOut()
 {
-	auto *page = new QWidget;
-	auto *v = new QVBoxLayout(page);
-	v->setContentsMargins(0, 0, 0, 0);
+	auto *content = new QWidget;
+	auto *v = new QVBoxLayout(content);
+	v->setContentsMargins(0, 0, 4, 0);
 	v->setSpacing(0);
 
 	v->addWidget(ui::title(tr("Live captions for your stream")));
 	v->addSpacing(GAP_LABEL);
-	v->addWidget(ui::muted(tr("Transcribe and translate live with VocalStack; captions show over the preview.")));
+	v->addWidget(ui::muted(tr("Your audience reads live captions and translations at a link you share. You also "
+				  "see them over the OBS preview; they never go into your stream.")));
 	v->addSpacing(GAP_SECTION);
 
 	signInButton = new QPushButton(tr("Sign in with VocalStack"));
@@ -265,7 +303,7 @@ QWidget *Dock::buildSignedOut()
 		login->start();
 	});
 	v->addWidget(signInButton);
-	v->addSpacing(6);
+	v->addSpacing(8);
 
 	auto *waiting = new QHBoxLayout;
 	signInStatus = new QLabel;
@@ -285,7 +323,7 @@ QWidget *Dock::buildSignedOut()
 	connect(signInSpin, &QTimer::timeout, this, [this]() {
 		signInFrame++;
 		signInStatus->setText(QStringLiteral("%1  %2").arg(ui::SPINNER.at(signInFrame % ui::SPINNER.size()),
-								  tr("Finish signing in in your browser…")));
+								  tr("Continue in your browser…")));
 	});
 	v->addSpacing(GAP_FIELD);
 
@@ -319,13 +357,12 @@ QWidget *Dock::buildSignedOut()
 	v->addWidget(keyRow);
 	v->addSpacing(GAP_SECTION);
 
-	auto *join = ui::muted();
-	join->setTextFormat(Qt::RichText);
-	connect(join, &QLabel::linkActivated, this, [this]() { QDesktopServices::openUrl(QUrl(api->appBase())); });
-	join->setText(tr("No account? %1").arg(anchor(this, "join", tr("Create one free"))));
-	v->addWidget(join);
+	joinLabel = ui::muted();
+	joinLabel->setTextFormat(Qt::RichText);
+	connect(joinLabel, &QLabel::linkActivated, this, [this]() { QDesktopServices::openUrl(QUrl(api->appBase())); });
+	v->addWidget(joinLabel);
 	v->addStretch(1);
-	return page;
+	return scrolling(content);
 }
 
 void Dock::setSigningIn(bool waiting)
@@ -335,7 +372,7 @@ void Dock::setSigningIn(bool waiting)
 	set_level(signInStatus, "");
 	if (waiting) {
 		signInFrame = 0;
-		signInStatus->setText(QStringLiteral("%1  %2").arg(ui::SPINNER.at(0), tr("Finish signing in in your browser…")));
+		signInStatus->setText(QStringLiteral("%1  %2").arg(ui::SPINNER.at(0), tr("Continue in your browser…")));
 		signInSpin->start();
 	} else {
 		signInSpin->stop();
@@ -347,8 +384,13 @@ void Dock::setSigningIn(bool waiting)
 QWidget *Dock::buildSignedIn()
 {
 	auto *page = new QWidget;
-	auto *v = new QVBoxLayout(page);
-	v->setContentsMargins(0, 0, 0, 0);
+	auto *pv = new QVBoxLayout(page);
+	pv->setContentsMargins(0, 0, 0, 0);
+	pv->setSpacing(0);
+
+	auto *content = new QWidget;
+	auto *v = new QVBoxLayout(content);
+	v->setContentsMargins(0, 0, 4, 0);
 	v->setSpacing(0);
 
 	// Broadcast: the list, edit, and the link listeners open.
@@ -360,12 +402,15 @@ QWidget *Dock::buildSignedIn()
 	broadcastBox = new ui::ReloadingCombo;
 	broadcastBox->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
 	broadcastBox->setMinimumContentsLength(8);
+	broadcastBox->addItem(tr("Loading…"), QString::fromLatin1(LOADING));
 	connect(broadcastBox, &ui::ReloadingCombo::aboutToShowPopup, this, [this]() {
 		if (QDateTime::currentMSecsSinceEpoch() - broadcastsLoadedAt > BROADCASTS_FRESH_MS)
 			loadBroadcasts();
 	});
 	connect(broadcastBox, &QComboBox::activated, this, [this](int index) {
 		const QString id = broadcastBox->itemData(index).toString();
+		if (id == QLatin1String(LOADING))
+			return;
 		if (id == QLatin1String(NEW_BROADCAST)) {
 			broadcastBox->setCurrentIndex(qMax(0, broadcastBox->findData(settings.broadcastId)));
 			openBroadcastEditor(QString());
@@ -377,14 +422,13 @@ QWidget *Dock::buildSignedIn()
 		showBroadcastLink();
 		updateLinks();
 	});
-	editBroadcastButton = new QToolButton;
-	editBroadcastButton->setText(tr("Edit"));
-	editBroadcastButton->setToolTip(tr("Edit this broadcast: name, link, visibility, language, speaker labels"));
+	editBroadcastButton = new QPushButton(tr("Edit"));
 	editBroadcastButton->setProperty("role", "edit");
 	// As tall as the list beside it, whatever OBS's theme makes that.
 	editBroadcastButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-	connect(editBroadcastButton, &QToolButton::clicked, this,
-		[this]() { openBroadcastEditor(settings.broadcastId); });
+	connect(editBroadcastButton, &QPushButton::clicked, this, [this]() {
+		openBroadcastEditor(broadcastObjects.contains(settings.broadcastId) ? settings.broadcastId : QString());
+	});
 	row->addWidget(broadcastBox, 1);
 	row->addWidget(editBroadcastButton);
 	bv->addLayout(row);
@@ -395,14 +439,32 @@ QWidget *Dock::buildSignedIn()
 	copyBroadcastButton = ui::linkButton(tr("Copy"));
 	copyBroadcastButton->setToolTip(tr("Copy the broadcast's link, for listeners"));
 	connect(copyBroadcastButton, &QToolButton::clicked, this, &Dock::copyBroadcastLink);
+	// Retry a failed load, or make the first broadcast.
+	broadcastAction = ui::linkButton(QString());
+	broadcastAction->hide();
+	connect(broadcastAction, &QToolButton::clicked, this, [this]() {
+		if (broadcastsFailed)
+			loadBroadcasts();
+		else
+			openBroadcastEditor(QString());
+	});
 	linkRow->addWidget(broadcastLink);
 	linkRow->addWidget(copyBroadcastButton);
+	linkRow->addWidget(broadcastAction);
 	linkRow->addStretch(1);
 	bv->addLayout(linkRow);
+	// While live, in place of the fields that cannot change.
+	liveSummary = ui::muted();
+	liveSummary->hide();
+	bv->addWidget(liveSummary);
 	v->addLayout(bv);
-	v->addSpacing(GAP_FIELD);
 
-	spokenBox = new QComboBox;
+	spokenBox = new ui::ReloadingCombo;
+	spokenBox->addItem(tr("Loading…"), QString());
+	connect(spokenBox, &ui::ReloadingCombo::aboutToShowPopup, this, [this]() {
+		if (spokenLanguages.isEmpty())
+			loadLists();
+	});
 	connect(spokenBox, &QComboBox::activated, this, [this]() {
 		const QString lang = spokenBox->currentData().toString();
 		const bool changed = lang != settings.spokenLanguage;
@@ -411,18 +473,20 @@ QWidget *Dock::buildSignedIn()
 		if (changed)
 			warm->languageChanged();
 	});
-	ui::field(v, tr("Spoken language"), spokenBox);
-	v->addSpacing(GAP_FIELD);
+	spokenBlock = ui::field(v, tr("Spoken language"), spokenBox);
+	spokenBlock->layout()->setContentsMargins(0, GAP_FIELD, 0, 0);
 
 	sendSwitch = new ui::Segmented;
 	sendSwitch->addOption(tr("Audio only"), false);
 	sendSwitch->addOption(tr("Audio + video"), true);
 	sendSwitch->setValue(settings.sendVideo);
+	auto *sendNote = ui::muted(tr("Audio + video also keeps your video with the recording."));
 	connect(sendSwitch, &ui::Segmented::changed, this, [this](const QVariant &value) {
 		settings.sendVideo = value.toBool();
 		settings.save();
 	});
-	ui::field(v, tr("Send to VocalStack"), sendSwitch);
+	sendBlock = ui::field(v, tr("Send"), sendSwitch, sendNote);
+	sendBlock->layout()->setContentsMargins(0, GAP_FIELD, 0, 0);
 	v->addSpacing(GAP_SECTION);
 
 	startButton = new QPushButton(tr("Start transcribing"));
@@ -437,21 +501,27 @@ QWidget *Dock::buildSignedIn()
 			QStringLiteral("%1  %2").arg(ui::SPINNER.at(stopFrame % ui::SPINNER.size()), tr("Stopping…")));
 	});
 
-	// Says the button need not be pressed when OBS will start it.
+	// Under Start: whichever of these is showing, 10 px below it.
+	auto *under = new QVBoxLayout;
+	under->setContentsMargins(0, 10, 0, 0);
+	under->setSpacing(8);
 	followHint = ui::muted();
 	followHint->setTextFormat(Qt::RichText);
 	connect(followHint, &QLabel::linkActivated, this, [this]() { pages->setCurrentIndex(SettingsPage); });
-	v->addSpacing(14);
-	v->addWidget(followHint);
-
-	// After a session: how it ended.
+	under->addWidget(followHint);
 	idleStatus = new QLabel;
 	idleStatus->setWordWrap(true);
 	idleStatus->setTextFormat(Qt::RichText);
-	idleStatus->setOpenExternalLinks(true);
+	connect(idleStatus, &QLabel::linkActivated, this, [this](const QString &link) {
+		if (link == "update") {
+			updateWanted = true;
+			showUpdate();
+		} else {
+			QDesktopServices::openUrl(QUrl(link));
+		}
+	});
 	idleStatus->hide();
-	v->addSpacing(6);
-	v->addWidget(idleStatus);
+	under->addWidget(idleStatus);
 
 	// While live: a card under Stop.
 	auto *card = new QFrame;
@@ -459,53 +529,60 @@ QWidget *Dock::buildSignedIn()
 	liveCard = card;
 	auto *grid = new QGridLayout(card);
 	grid->setContentsMargins(12, 10, 10, 10);
-	grid->setHorizontalSpacing(6);
+	grid->setHorizontalSpacing(8);
 	grid->setVerticalSpacing(4);
+	auto *top = new QHBoxLayout;
+	top->setSpacing(8);
 	liveDot = new QLabel(QStringLiteral("●"));
 	liveDot->setProperty("role", "dot");
 	liveWord = ui::eyebrow(tr("Live"));
 	liveClock = new QLabel;
-	liveClock->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-	liveListeners = ui::muted();
-	liveListeners->setWordWrap(false);
-	liveListeners->hide();
+	QFont clockFont = liveClock->font();
+	clockFont.setFeature(QFont::Tag("tnum"), 1); // digits that do not jitter
+	liveClock->setFont(clockFont);
 	captionsToggle = new QToolButton;
 	captionsToggle->setText(QStringLiteral("CC"));
 	captionsToggle->setCheckable(true);
+	captionsToggle->setProperty("role", "toggle");
 	captionsToggle->setChecked(settings.showCaptions);
-	captionsToggle->setAutoRaise(true);
-	captionsToggle->setToolTip(tr("Show captions over the preview"));
-	connect(captionsToggle, &QToolButton::toggled, this, [this](bool on) {
+	auto captionsTip = [this](bool on) {
+		captionsToggle->setToolTip(on ? tr("Captions shown on the OBS preview (not in your stream)")
+					      : tr("Show captions on the OBS preview"));
+	};
+	captionsTip(settings.showCaptions);
+	connect(captionsToggle, &QToolButton::toggled, this, [this, captionsTip](bool on) {
 		settings.showCaptions = on;
+		captionsTip(on);
 		if (!on && overlay)
 			overlay->setCaption(QString(), QString());
 	});
-	auto *top = new QHBoxLayout;
-	top->setSpacing(6);
 	top->addWidget(liveDot);
 	top->addWidget(liveWord);
 	top->addWidget(liveClock);
 	top->addStretch(1);
-	top->addWidget(liveListeners);
 	top->addWidget(captionsToggle);
-	grid->addLayout(top, 0, 0);
+	grid->addLayout(top, 0, 0, 1, 2);
 	liveStatus = new QLabel;
 	liveStatus->setWordWrap(true);
 	liveStatus->setTextFormat(Qt::RichText);
 	liveStatus->setOpenExternalLinks(true);
+	liveListeners = ui::muted();
+	liveListeners->setWordWrap(false);
+	liveListeners->hide();
 	grid->addWidget(liveStatus, 1, 0);
+	grid->addWidget(liveListeners, 1, 1, Qt::AlignRight | Qt::AlignTop);
+	grid->setColumnStretch(0, 1);
 	card->hide();
-	v->addSpacing(8);
-	v->addWidget(card);
+	under->addWidget(card);
 	liveTick = new QTimer(this);
-	liveTick->setInterval(500);
+	liveTick->setInterval(1000);
 	connect(liveTick, &QTimer::timeout, this, &Dock::tickLive);
 
-	// VocalStack's warnings while live, one callout each.
+	// VocalStack's warnings and errors while live, one callout each.
 	noticesBox = new QVBoxLayout;
 	noticesBox->setSpacing(6);
-	noticesBox->setContentsMargins(0, 8, 0, 0);
-	v->addLayout(noticesBox);
+	under->addLayout(noticesBox);
+	v->addLayout(under);
 
 	// The transcription in VocalStack: open it, or share it.
 	transcriptBlock = new QWidget;
@@ -514,22 +591,27 @@ QWidget *Dock::buildSignedIn()
 	tv->setSpacing(GAP_LABEL);
 	transcriptEyebrow = ui::eyebrow(tr("Last transcript"));
 	tv->addWidget(transcriptEyebrow);
-	auto *links = new QHBoxLayout;
+	transcriptButtons = new QBoxLayout(QBoxLayout::LeftToRight);
+	transcriptButtons->setSpacing(6);
 	openButton = new QPushButton(tr("Open transcript ↗"));
 	openButton->setProperty("role", "secondary");
 	connect(openButton, &QPushButton::clicked, this, &Dock::openTranscription);
-	copyLinkButton = new QPushButton(tr("Share transcript"));
+	copyLinkButton = new QPushButton(tr("Copy share link"));
 	copyLinkButton->setProperty("role", "secondary");
 	copyLinkButton->setToolTip(tr("Copy a link anyone can read the transcription with"));
+	// Wide enough for "✓ Link copied" too, so neither button jumps.
+	const QFontMetrics fm(copyLinkButton->font());
+	copyLinkButton->setMinimumWidth(
+		qMax(fm.horizontalAdvance(tr("Copy share link")), fm.horizontalAdvance(tr("✓ Link copied"))) + 32);
 	connect(copyLinkButton, &QPushButton::clicked, this, &Dock::copyTranscriptLink);
-	links->addWidget(openButton, 1);
-	links->addWidget(copyLinkButton, 1);
-	tv->addLayout(links);
+	transcriptButtons->addWidget(openButton, 1);
+	transcriptButtons->addWidget(copyLinkButton, 1);
+	tv->addLayout(transcriptButtons);
 	v->addWidget(transcriptBlock);
 	v->addStretch(1);
+	pv->addWidget(scrolling(content), 1);
 
-	// A newer release: how it is going, and Update now when it does not
-	// install by itself.
+	// Pinned below: a newer release, and who is signed in.
 	updateCallout = new ui::Callout;
 	updateCallout->hide();
 	updateButton = new QPushButton(tr("Update now"));
@@ -551,20 +633,22 @@ QWidget *Dock::buildSignedIn()
 		updateSpinFrame++;
 		showUpdate();
 	});
-	v->addSpacing(GAP_FIELD);
-	v->addWidget(updateCallout);
-	v->addSpacing(8);
-
-	// Who is signed in, and the settings.
+	auto *pinned = new QVBoxLayout;
+	pinned->setContentsMargins(0, 8, 0, 0);
+	pinned->addWidget(updateCallout);
+	pv->addLayout(pinned);
+	pv->addSpacing(8);
+	pv->addWidget(ui::rule());
+	pv->addSpacing(6);
 	auto *foot = new QHBoxLayout;
 	auto *account = new ui::ElidedLabel;
 	account->setProperty("role", "muted");
 	accountLabel = account;
-	auto *settingsButton = ui::linkButton(tr("⚙ Settings"));
+	auto *settingsButton = ui::linkButton(QStringLiteral("⚙︎ ") + tr("Settings"));
 	connect(settingsButton, &QToolButton::clicked, this, [this]() { pages->setCurrentIndex(SettingsPage); });
 	foot->addWidget(account, 1);
 	foot->addWidget(settingsButton);
-	v->addLayout(foot);
+	pv->addLayout(foot);
 	return page;
 }
 
@@ -575,10 +659,15 @@ QWidget *Dock::buildSettings()
 	auto *page = new QWidget;
 	auto *outer = new QVBoxLayout(page);
 	outer->setContentsMargins(0, 0, 0, 0);
-	outer->setSpacing(GAP_SECTION);
+	outer->setSpacing(GAP_FIELD);
 	QLabel *heading;
 	outer->addWidget(pageHeader(&heading, nullptr));
 	heading->setText(tr("Settings"));
+	settingsLiveNote = ui::muted(tr("Some settings can't change while transcribing."));
+	set_level(settingsLiveNote, "warn");
+	settingsLiveNote->hide();
+	outer->addWidget(settingsLiveNote);
+	new QShortcut(QKeySequence(Qt::Key_Escape), page, this, [this]() { goBack(); }, Qt::WidgetWithChildrenShortcut);
 
 	auto *content = new QWidget;
 	auto *v = new QVBoxLayout(content);
@@ -587,15 +676,16 @@ QWidget *Dock::buildSettings()
 
 	// Transcription.
 	nameEdit = new QLineEdit;
-	nameEdit->setPlaceholderText(tr("OBS on %1 (optional)").arg(QHostInfo::localHostName()));
+	nameEdit->setPlaceholderText(tr("OBS on %1").arg(host_name()));
 	nameEdit->setText(settings.transcriptionName);
 	connect(nameEdit, &QLineEdit::editingFinished, this, [this]() {
 		settings.transcriptionName = nameEdit->text().trimmed().left(200);
 		settings.save();
 	});
-	ui::field(v, tr("Transcription name"), nameEdit, ui::muted(tr("What the transcription is called in VocalStack.")));
+	ui::field(v, tr("Transcription name"), nameEdit,
+		  ui::muted(tr("Optional. What the transcription is called in VocalStack.")));
 	v->addSpacing(GAP_FIELD);
-	lockBox = new QCheckBox(tr("Lock the transcription against deletion"));
+	lockBox = new QCheckBox(tr("Lock against deletion"));
 	lockBox->setChecked(settings.locked);
 	connect(lockBox, &QCheckBox::toggled, this, [this](bool on) {
 		settings.locked = on;
@@ -603,7 +693,7 @@ QWidget *Dock::buildSettings()
 	});
 	v->addWidget(lockBox);
 	v->addSpacing(GAP_LABEL);
-	v->addWidget(ui::muted(tr("It can't be deleted from the dashboard until it is unlocked.")));
+	v->addWidget(ui::muted(tr("The transcription can't be deleted from the dashboard until it is unlocked.")));
 	v->addSpacing(GAP_SECTION);
 
 	speakersSwitch = new ui::Segmented;
@@ -619,29 +709,24 @@ QWidget *Dock::buildSettings()
 		  ui::muted(tr("Follows the broadcast's default; a change here lasts until you choose another broadcast.")));
 	v->addSpacing(GAP_SECTION);
 
-	followBox = new QCheckBox(tr("Start and stop with OBS streaming or recording"));
+	followBox = new QCheckBox(tr("Follow OBS"));
 	followBox->setChecked(settings.followObs);
 	connect(followBox, &QCheckBox::toggled, this, [this](bool on) {
 		settings.followObs = on;
 		settings.save();
 		updateFollowHint();
 	});
-	ui::field(v, tr("OBS"), followBox);
+	ui::field(v, tr("Start and stop"), followBox, ui::muted(tr("Starts and stops with streaming or recording.")));
 	v->addSpacing(GAP_SECTION);
 
 	// Updates.
 	auto *uv = new QVBoxLayout;
-	uv->setSpacing(6);
+	uv->setSpacing(GAP_LABEL);
 	uv->addWidget(ui::eyebrow(tr("Updates")));
-	autoUpdateBox = new QCheckBox(tr("Install updates automatically"));
-	autoUpdateBox->setToolTip(tr("A newer release is installed while nothing is being transcribed; restart OBS to use it"));
-	autoUpdateBox->setChecked(settings.autoUpdate);
-	connect(autoUpdateBox, &QCheckBox::toggled, this, [this](bool on) {
-		settings.autoUpdate = on;
-		settings.save();
-		showUpdate();
-	});
-	uv->addWidget(autoUpdateBox);
+	uv->addWidget(ui::muted(tr("Version %1").arg(PLUGIN_VERSION)));
+	uv->addSpacing(GAP_LABEL);
+	auto *checkRow = new QHBoxLayout;
+	checkRow->setSpacing(8);
 	checkUpdatesButton = new QPushButton(tr("Check for updates"));
 	checkUpdatesButton->setProperty("role", "secondary");
 	connect(checkUpdatesButton, &QPushButton::clicked, this, [this]() {
@@ -652,24 +737,38 @@ QWidget *Dock::buildSettings()
 		if (updater->step() != Updater::Step::Checking)
 			showUpdate(); // busy downloading or installing: say so now
 	});
-	uv->addWidget(checkUpdatesButton, 0, Qt::AlignLeft);
 	checkUpdatesResult = ui::muted();
-	uv->addWidget(checkUpdatesResult);
-	uv->addWidget(ui::muted(tr("Version %1").arg(PLUGIN_VERSION)));
+	checkRow->addWidget(checkUpdatesButton, 0, Qt::AlignTop);
+	checkRow->addWidget(checkUpdatesResult, 1);
+	uv->addLayout(checkRow);
+	uv->addSpacing(8);
+	autoUpdateBox = new QCheckBox(tr("Update automatically"));
+	autoUpdateBox->setChecked(settings.autoUpdate);
+	connect(autoUpdateBox, &QCheckBox::toggled, this, [this](bool on) {
+		settings.autoUpdate = on;
+		settings.save();
+		showUpdate();
+	});
+	uv->addWidget(autoUpdateBox);
+	uv->addWidget(ui::muted(tr("Installs while nothing is being transcribed; restart OBS to use it.")));
 	v->addLayout(uv);
 	v->addSpacing(GAP_SECTION);
 
 	// Account.
 	auto *av = new QVBoxLayout;
-	av->setSpacing(6);
+	av->setSpacing(GAP_LABEL);
 	av->addWidget(ui::eyebrow(tr("Account")));
 	settingsAccount = new QLabel;
 	settingsAccount->setWordWrap(true);
 	av->addWidget(settingsAccount);
-	auto *signOutButton = new QPushButton(tr("Sign out"));
+	av->addSpacing(GAP_LABEL);
+	signOutButton = new QPushButton(tr("Sign out"));
 	signOutButton->setProperty("role", "secondary");
 	connect(signOutButton, &QPushButton::clicked, this, [this]() { signOut(QString()); });
 	av->addWidget(signOutButton, 0, Qt::AlignLeft);
+	signOutNote = ui::muted(tr("Stop transcribing to sign out."));
+	signOutNote->hide();
+	av->addWidget(signOutNote);
 	v->addLayout(av);
 	v->addStretch(1);
 
@@ -689,9 +788,11 @@ void Dock::onStatus(const QString &text, Session::Level level)
 	if (level != Session::Level::Ok)
 		obs_log(LOG_WARNING, "%s", text.toUtf8().constData());
 	if (session->state() == Session::State::Idle) {
-		idleStatus->setText(text);
+		// A clean stop says itself in the transcript's heading instead.
+		const QString shown = level == Session::Level::Ok ? QString() : text;
+		idleStatus->setText(shown);
 		set_level(idleStatus, level_name(level));
-		idleStatus->setVisible(!text.isEmpty());
+		idleStatus->setVisible(!shown.isEmpty());
 		return;
 	}
 	liveStatus->setText(text);
@@ -700,36 +801,38 @@ void Dock::onStatus(const QString &text, Session::Level level)
 	tickLive();
 }
 
-// The live card's dot (coral and pulsing when all is well, amber while it
-// connects or warns, red on a failure) and the time since going live.
+// The live card's dot and word (coral, with a slow pulse while all is well;
+// amber while connecting or warning; red on a failure) and the time since
+// going live.
 void Dock::tickLive()
 {
 	const Session::State s = session->state();
 	liveTicks++;
-	const char *dot = "live";
+	const char *level = "live";
 	if (s == Session::State::Starting || liveLevel == Session::Level::Warn)
-		dot = "warn";
+		level = "warn";
 	else if (liveLevel == Session::Level::Error)
-		dot = "error";
-	else if (liveTicks % 2)
-		dot = "dim";
-	set_level(liveDot, dot);
-	liveWord->setText(s == Session::State::Starting ? tr("Starting") : s == Session::State::Stopping ? tr("Stopping") : tr("Live"));
+		level = "error";
+	set_level(liveDot, std::strcmp(level, "live") == 0 && liveTicks % 4 == 3 ? "dim" : level);
+	set_level(liveWord, level);
+	liveWord->setVisible(s != Session::State::Starting);
+	liveWord->setText(s == Session::State::Stopping ? tr("Stopping") : tr("Live"));
 	if (s == Session::State::Live && liveSince.isValid()) {
 		const qint64 secs = liveSince.elapsed() / 1000;
-		liveClock->setText(QStringLiteral("%1:%2:%3")
-					   .arg(secs / 3600, 2, 10, QChar('0'))
-					   .arg((secs / 60) % 60, 2, 10, QChar('0'))
-					   .arg(secs % 60, 2, 10, QChar('0')));
+		liveClock->setText(secs < 3600 ? QStringLiteral("%1:%2").arg(secs / 60).arg(secs % 60, 2, 10, QChar('0'))
+					       : QStringLiteral("%1:%2:%3")
+							 .arg(secs / 3600)
+							 .arg((secs / 60) % 60, 2, 10, QChar('0'))
+							 .arg(secs % 60, 2, 10, QChar('0')));
 		liveClock->show();
 	} else {
 		liveClock->hide();
 	}
 }
 
-void Dock::showNotices(const QStringList &notes)
+void Dock::showNotices(const QStringList &warnings, const QStringList &errors)
 {
-	currentNotices = notes;
+	currentNotices = errors + warnings;
 	// Later, not now: a callout's own ✕ may be what called this.
 	while (QLayoutItem *item = noticesBox->takeAt(0)) {
 		if (QWidget *w = item->widget()) {
@@ -738,25 +841,38 @@ void Dock::showNotices(const QStringList &notes)
 		}
 		delete item;
 	}
-	for (const QString &note : notes) {
+	auto add = [this, warnings, errors](const QString &note, const char *tone) {
 		if (dismissedNotices.contains(note))
-			continue;
+			return;
 		obs_log(LOG_WARNING, "%s", note.toUtf8().constData());
 		auto *c = new ui::Callout;
-		c->setTone("warn");
+		c->setTone(tone);
 		c->setText(note.toHtmlEscaped());
-		connect(c, &ui::Callout::dismissed, this, [this, note]() {
+		connect(c, &ui::Callout::dismissed, this, [this, note, warnings, errors]() {
 			dismissedNotices.append(note);
-			showNotices(currentNotices);
+			showNotices(warnings, errors);
 		});
 		noticesBox->addWidget(c);
-	}
+	};
+	for (const QString &note : errors)
+		add(note, "error");
+	for (const QString &note : warnings)
+		add(note, "warn");
+}
+
+// While live: the choices that cannot change, in one line.
+void Dock::updateLiveSummary()
+{
+	const QString lang = spokenBox->currentData().toString().isEmpty() ? tr("Auto detect") : spokenBox->currentText();
+	liveSummary->setText(QStringLiteral("%1 · %2").arg(lang, settings.sendVideo ? tr("Audio + video") : tr("Audio only")));
 }
 
 void Dock::onState(Session::State s)
 {
 	const bool idle = s == Session::State::Idle;
 	const bool stopping = s == Session::State::Stopping;
+	if (stopping && liveSince.isValid())
+		lastDurationS = liveSince.elapsed() / 1000;
 	if (stopping) {
 		stopFrame = 0;
 		startButton->setText(QStringLiteral("%1  %2").arg(ui::SPINNER.at(0), tr("Stopping…")));
@@ -765,11 +881,13 @@ void Dock::onState(Session::State s)
 		stopSpin->stop();
 		startButton->setText(idle ? tr("Start transcribing") : tr("■  Stop transcribing"));
 	}
+	startButton->setProperty("busy", stopping);
 	ui::setRole(startButton, idle ? "primary" : "danger");
 	startButton->setEnabled(!stopping);
 
 	if (s == Session::State::Starting) {
 		dismissedNotices.clear();
+		lastDurationS = -1;
 		liveStatus->setText(tr("Connecting…"));
 		set_level(liveStatus, "warn");
 		liveLevel = Session::Level::Warn;
@@ -789,9 +907,16 @@ void Dock::onState(Session::State s)
 	}
 	captionsToggle->setChecked(settings.showCaptions);
 
-	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, spokenBox, sendSwitch, editBroadcastButton,
-							  speakersSwitch, lockBox, nameEdit})
+	// While live, the fields that cannot change give way to a summary.
+	spokenBlock->setVisible(idle);
+	sendBlock->setVisible(idle);
+	updateLiveSummary();
+	liveSummary->setVisible(!idle);
+	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, editBroadcastButton, speakersSwitch, lockBox,
+							  nameEdit, signOutButton})
 		w->setEnabled(idle);
+	settingsLiveNote->setVisible(!idle);
+	signOutNote->setVisible(!idle);
 	updateFollowHint();
 	updateLinks();
 	showUpdate(); // idle again: an update waiting may install
@@ -833,15 +958,18 @@ void Dock::updateFollowHint()
 	followHint->setVisible(settings.followObs && session->state() == Session::State::Idle && !obs_busy());
 }
 
-// The transcript buttons once there is a transcript; the broadcast's own
-// buttons when one is chosen.
+// The transcript buttons once there is a transcript; Edit or + New.
 void Dock::updateLinks()
 {
 	const bool idle = session->state() == Session::State::Idle;
 	transcriptBlock->setVisible(!settings.transcriptionId.isEmpty());
 	transcriptEyebrow->setVisible(idle);
+	transcriptEyebrow->setText(lastDurationS >= 0 ? tr("Last transcript · %1").arg(duration_text(lastDurationS))
+						      : tr("Last transcript"));
 	const bool chosen = broadcastObjects.contains(settings.broadcastId);
-	editBroadcastButton->setEnabled(chosen && idle);
+	editBroadcastButton->setText(chosen ? tr("Edit") : tr("+ New"));
+	editBroadcastButton->setToolTip(chosen ? tr("Edit this broadcast: name, link, visibility, language, speaker labels")
+					       : tr("Make a broadcast: a link listeners open"));
 	copyBroadcastButton->setEnabled(chosen);
 }
 
@@ -873,8 +1001,9 @@ void Dock::copyTranscriptLink()
 			  copyLinkButton->setEnabled(true);
 			  const QString url = doc.object().value("url").toString();
 			  if (!error.isEmpty() || url.isEmpty()) {
-				  obs_log(LOG_WARNING, "share link: %s", error.toUtf8().constData());
-				  ui::flash(copyLinkButton, tr("Couldn't make a link"), 2500);
+				  onStatus(tr("Couldn't make a share link: %1")
+						   .arg(error.isEmpty() ? tr("no link came back") : error),
+					   Session::Level::Error);
 				  return;
 			  }
 			  QGuiApplication::clipboard()->setText(url);
@@ -903,12 +1032,15 @@ void Dock::showUpdate()
 		else if (step != Updater::Step::Idle)
 			checkUpdatesResult->setText(tr("Updating to %1…").arg(latest));
 		else if (age == Updater::Age::Current)
-			checkUpdatesResult->setText(tr("You have the latest version (%1).").arg(PLUGIN_VERSION));
+			checkUpdatesResult->setText(tr("You have the latest version."));
 		else
 			checkUpdatesResult->setText(tr("Version %1 is out.").arg(latest));
 	}
 	QString text = updater->message().toHtmlEscaped();
 	bool problem = updater->problem();
+	// A failed install: the page to download it from by hand.
+	if (problem && !text.isEmpty())
+		text += " " + anchor(this, PLUGIN_PAGE, tr("Download"));
 	const bool pending = age != Updater::Age::Current && step == Updater::Step::Idle;
 	if (pending && (settings.autoUpdate || updateWanted) && !settings.apiKey.isEmpty() && !problem &&
 	    session->state() == Session::State::Idle) {
@@ -928,14 +1060,13 @@ void Dock::showUpdate()
 			problem = true;
 			break;
 		case Updater::Age::Unsupported:
-			text = tr("VocalStack for OBS %1 is out; this version (%2) is no longer supported. Update to transcribe.")
+			text = tr("VocalStack for OBS %1 is out; this version (%2) is no longer supported.")
 				       .arg(latest, PLUGIN_VERSION);
 			problem = true;
 			break;
 		case Updater::Age::Current:
 			break;
 		}
-		text += " " + anchor(this, PLUGIN_PAGE, tr("Download"));
 	}
 	// Working: a spinner before the words. Done: a check.
 	const bool working = step == Updater::Step::Downloading || step == Updater::Step::Installing;
@@ -955,9 +1086,18 @@ void Dock::showUpdate()
 	updateCallout->setDismissible(!working);
 	updateCallout->setVisible(!text.isEmpty() && !dismissed);
 	updateButton->setVisible(pending && !settings.autoUpdate && !updateWanted);
-	// An unsupported version does not start.
+	// An unsupported version does not start, and says why where Start is.
 	const bool blocked = age == Updater::Age::Unsupported && step != Updater::Step::Installed;
+	const bool idle = session->state() == Session::State::Idle;
 	startButton->setEnabled(!blocked && session->state() != Session::State::Stopping);
+	startButton->setToolTip(blocked ? tr("This version is no longer supported: update to keep transcribing")
+					: QString());
+	if (blocked && idle) {
+		idleStatus->setText(tr("Update to keep transcribing: this version is no longer supported. %1")
+					    .arg(anchor(this, "update", tr("Update now"))));
+		set_level(idleStatus, "error");
+		idleStatus->show();
+	}
 }
 
 // ---------------------------------------------------------------- sign-in
@@ -968,8 +1108,9 @@ void Dock::showSignedIn(bool in)
 	if (!in)
 		return;
 	const QString who = settings.account.isEmpty() ? tr("an API key") : settings.account;
-	static_cast<ui::ElidedLabel *>(accountLabel)->setFullText(settings.account.isEmpty() ? tr("Signed in with an API key") : settings.account);
-	settingsAccount->setText(tr("Signed in to <b>%1</b>").arg(who.toHtmlEscaped()));
+	static_cast<ui::ElidedLabel *>(accountLabel)
+		->setFullText(settings.account.isEmpty() ? tr("Signed in with an API key") : settings.account);
+	settingsAccount->setText(tr("Signed in as <b>%1</b>").arg(who.toHtmlEscaped()));
 	loadLists();
 	loadBroadcasts();
 	session->refreshLimits();
@@ -1045,6 +1186,8 @@ void Dock::signOut(const QString &why)
 	settings.showCaptions = true;
 	broadcastObjects.clear();
 	broadcastOrder.clear();
+	broadcastsShown.clear();
+	appliedBroadcastId.clear();
 	settings.save();
 	warm->refresh(); // canStart false while the key still works
 	api->setKey(QString());
@@ -1058,8 +1201,17 @@ void Dock::signOut(const QString &why)
 void Dock::loadLists()
 {
 	api->get("/v1/languages", [this](int, const QJsonDocument &doc, const QString &error) {
-		if (!error.isEmpty())
+		spokenBox->clear();
+		spokenBox->addItem(tr("Auto detect"), QString());
+		if (!error.isEmpty()) {
+			// The saved language stays choosable; the list is asked for
+			// again when it is opened.
+			obs_log(LOG_WARNING, "languages: %s", error.toUtf8().constData());
+			if (!settings.spokenLanguage.isEmpty())
+				spokenBox->addItem(settings.spokenLanguage, settings.spokenLanguage);
+			spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(settings.spokenLanguage)));
 			return;
+		}
 		const QJsonObject o = doc.object();
 		QHash<QString, QString> names;
 		for (const QJsonValue v : o.value("languages").toArray())
@@ -1068,22 +1220,27 @@ void Dock::loadLists()
 		for (const QJsonValue c : o.value("transcription").toArray())
 			spokenLanguages.append({names.value(c.toString(), c.toString()), c.toString()});
 		std::sort(spokenLanguages.begin(), spokenLanguages.end());
-		spokenBox->clear();
-		spokenBox->addItem(tr("Auto detect"), QString());
 		for (const auto &[name, code] : spokenLanguages)
 			spokenBox->addItem(name, code);
 		spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(settings.spokenLanguage)));
+		updateLiveSummary();
 	});
 }
 
-void Dock::loadBroadcasts()
+// `choose`: the chosen broadcast's defaults are taken again (it was just
+// made or edited). Otherwise only a broadcast chosen anew brings its
+// defaults, so reopening the list keeps what the person set.
+void Dock::loadBroadcasts(bool choose)
 {
 	broadcastsLoadedAt = QDateTime::currentMSecsSinceEpoch();
-	api->get("/v1/broadcasts", [this](int, const QJsonDocument &doc, const QString &error) {
+	api->get("/v1/broadcasts", [this, choose](int, const QJsonDocument &doc, const QString &error) {
 		if (!error.isEmpty()) {
-			onStatus(tr("Could not load the broadcasts: %1").arg(error), Session::Level::Error);
+			obs_log(LOG_WARNING, "broadcasts: %s", error.toUtf8().constData());
+			broadcastsFailed = true;
+			showBroadcastLink();
 			return;
 		}
+		broadcastsFailed = false;
 		broadcastObjects.clear();
 		broadcastOrder.clear();
 		for (const QJsonValue v : doc.object().value("broadcasts").toArray()) {
@@ -1102,18 +1259,28 @@ void Dock::loadBroadcasts()
 			settings.save();
 		}
 		fillBroadcasts();
-		applyBroadcastDefaults(settings.broadcastId);
+		if (choose || settings.broadcastId != appliedBroadcastId)
+			applyBroadcastDefaults(settings.broadcastId);
 		showBroadcastLink();
 		updateLinks();
 	});
 }
 
-// The list: None, the broadcasts, and "New broadcast…" at its end.
+// The list: none, the broadcasts, and "New broadcast…" at its end. Left as
+// it is when nothing in it changed (it may be open).
 void Dock::fillBroadcasts()
 {
+	QString shown;
+	for (const QString &id : broadcastOrder)
+		shown += id + '\t' + broadcastObjects.value(id).value("name").toString() + '\n';
+	if (shown == broadcastsShown && broadcastBox->findData(QString::fromLatin1(LOADING)) < 0) {
+		broadcastBox->setCurrentIndex(qMax(0, broadcastBox->findData(settings.broadcastId)));
+		return;
+	}
+	broadcastsShown = shown;
 	const QSignalBlocker quiet(broadcastBox);
 	broadcastBox->clear();
-	broadcastBox->addItem(tr("None"), QString());
+	broadcastBox->addItem(tr("No broadcast (save only)"), QString());
 	for (const QString &id : broadcastOrder)
 		broadcastBox->addItem(broadcastObjects.value(id).value("name").toString(), id);
 	broadcastBox->insertSeparator(broadcastBox->count());
@@ -1121,19 +1288,39 @@ void Dock::fillBroadcasts()
 	broadcastBox->setCurrentIndex(qMax(0, broadcastBox->findData(settings.broadcastId)));
 }
 
-// The chosen broadcast's link under the list, with a lock when private.
+// Under the list: the chosen broadcast's link (and Copy), or why there is
+// none, with what to do about it.
 void Dock::showBroadcastLink()
 {
+	auto say = [this](const QString &text, const char *level, const QString &action) {
+		broadcastLink->setFullText(text);
+		set_level(broadcastLink, level);
+		copyBroadcastButton->hide();
+		broadcastAction->setText(action);
+		broadcastAction->setVisible(!action.isEmpty());
+	};
+	if (broadcastsFailed) {
+		say(tr("Couldn't load broadcasts"), "error", tr("Retry"));
+		return;
+	}
+	if (broadcastBox->findData(QString::fromLatin1(LOADING)) >= 0) {
+		say(tr("Loading…"), "", QString());
+		return;
+	}
+	if (broadcastOrder.isEmpty()) {
+		say(tr("Listeners need a broadcast link to follow along."), "", tr("Create one"));
+		return;
+	}
 	const QJsonObject b = broadcastObjects.value(settings.broadcastId);
 	const QString url = b.value("shareUrl").toString();
 	if (b.isEmpty() || url.isEmpty()) {
-		broadcastLink->setFullText(settings.broadcastId.isEmpty() ? tr("No broadcast: the transcript is only saved")
-									  : QString());
-		copyBroadcastButton->hide();
+		say(tr("The transcript is saved; no one follows it live."), "", QString());
 		return;
 	}
 	const QString bare = QString(url).remove(QRegularExpression("^https?://"));
-	broadcastLink->setFullText(b.value("access").toString() == "private" ? QStringLiteral("🔒 ") + bare : bare);
+	broadcastLink->setFullText(b.value("access").toString() == "private" ? tr("Private · %1").arg(bare) : bare);
+	set_level(broadcastLink, "");
+	broadcastAction->hide();
 	copyBroadcastButton->show();
 }
 
@@ -1141,6 +1328,7 @@ void Dock::showBroadcastLink()
 // set in VocalStack, become the dock's. "None" changes nothing.
 void Dock::applyBroadcastDefaults(const QString &id)
 {
+	appliedBroadcastId = id;
 	if (id.isEmpty() || !broadcastObjects.contains(id))
 		return;
 	const QJsonObject s = broadcastObjects.value(id).value("settings").toObject();
@@ -1154,6 +1342,7 @@ void Dock::applyBroadcastDefaults(const QString &id)
 	settings.save();
 	spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(settings.spokenLanguage)));
 	speakersSwitch->setValue(settings.speakerLabels);
+	updateLiveSummary();
 	if (langChanged)
 		warm->languageChanged();
 }
@@ -1198,35 +1387,41 @@ QWidget *Dock::buildBroadcastEditor()
 	auto *page = new QWidget;
 	auto *outer = new QVBoxLayout(page);
 	outer->setContentsMargins(0, 0, 0, 0);
-	outer->setSpacing(GAP_SECTION);
+	outer->setSpacing(GAP_FIELD);
 	outer->addWidget(pageHeader(&edTitle, &edSubtitle));
+	new QShortcut(QKeySequence(Qt::Key_Escape), page, this, [this]() { goBack(); }, Qt::WidgetWithChildrenShortcut);
 
 	auto *content = new QWidget;
 	auto *v = new QVBoxLayout(content);
 	v->setContentsMargins(0, 0, 4, 0);
 	v->setSpacing(0);
+	auto dirty = [this]() { editDirty = true; };
 
 	edName = new QLineEdit;
 	edName->setPlaceholderText(tr("A name for your broadcast…"));
-	connect(edName, &QLineEdit::textEdited, this, [this]() {
+	connect(edName, &QLineEdit::textEdited, this, [this, dirty]() {
+		dirty();
 		if (editingId.isEmpty() && !editCodeTouched)
 			edCode->setText(slugify(edName->text()));
 		updateBroadcastEditor();
 	});
-	edNameNote = ui::muted();
-	edNameNote->hide();
-	ui::field(v, tr("Broadcast name"), edName, edNameNote);
+	ui::field(v, tr("Broadcast name"), edName);
 	v->addSpacing(GAP_FIELD);
 
+	// The link: the host, then the part that is the broadcast's own.
 	auto *lv = new QVBoxLayout;
 	lv->setSpacing(GAP_LABEL);
-	lv->addWidget(ui::eyebrow(tr("Link")));
-	edLinkPrefix = ui::muted();
-	lv->addWidget(edLinkPrefix);
+	edLinkEyebrow = ui::eyebrow(tr("Public link"));
+	lv->addWidget(edLinkEyebrow);
+	auto *linkRow = new QHBoxLayout;
+	linkRow->setSpacing(0);
+	edLinkPrefix = new ui::ElidedLabel;
+	edLinkPrefix->setProperty("role", "muted");
 	edCode = new QLineEdit;
 	edCode->setPlaceholderText("my-broadcast-link");
 	edCode->setMaxLength(CODE_MAX);
-	connect(edCode, &QLineEdit::textEdited, this, [this](const QString &text) {
+	connect(edCode, &QLineEdit::textEdited, this, [this, dirty](const QString &text) {
+		dirty();
 		edLinkNote->clear();
 		edCode->setProperty("invalid", false);
 		ui::repolish(edCode);
@@ -1236,7 +1431,9 @@ QWidget *Dock::buildBroadcastEditor()
 			edCode->setText(slugify(edName->text()));
 		updateBroadcastEditor();
 	});
-	lv->addWidget(edCode);
+	linkRow->addWidget(edLinkPrefix);
+	linkRow->addWidget(edCode, 1);
+	lv->addLayout(linkRow);
 	edLinkNote = ui::muted();
 	edLinkNote->setTextFormat(Qt::RichText);
 	// A suggestion offered for a link that is taken: a click takes it.
@@ -1246,6 +1443,7 @@ QWidget *Dock::buildBroadcastEditor()
 		ui::repolish(edCode);
 		edLinkNote->clear();
 		editCodeTouched = true;
+		editDirty = true;
 		edError->clear();
 		updateBroadcastEditor();
 	});
@@ -1259,14 +1457,36 @@ QWidget *Dock::buildBroadcastEditor()
 	edAccess = new ui::Segmented;
 	edAccess->addOption(tr("Public"), "public");
 	edAccess->addOption(tr("Private"), "private");
-	connect(edAccess, &ui::Segmented::changed, this, [this]() { updateBroadcastEditor(); });
+	connect(edAccess, &ui::Segmented::changed, this, [this, dirty]() {
+		dirty();
+		updateBroadcastEditor();
+	});
 	av->addWidget(edAccess);
 	edAccessNote = ui::muted();
 	av->addWidget(edAccessNote);
+	edPasswordBlock = new QWidget;
+	auto *pwv = new QVBoxLayout(edPasswordBlock);
+	pwv->setContentsMargins(0, 8, 0, 0);
+	pwv->setSpacing(GAP_LABEL);
+	pwv->addWidget(ui::eyebrow(tr("Password")));
+	auto *pwRow = new QHBoxLayout;
+	pwRow->setSpacing(4);
 	edPassword = new QLineEdit;
 	edPassword->setEchoMode(QLineEdit::Password);
-	connect(edPassword, &QLineEdit::textEdited, this, [this]() { updateBroadcastEditor(); });
-	av->addWidget(edPassword);
+	connect(edPassword, &QLineEdit::textEdited, this, [this, dirty]() {
+		dirty();
+		updateBroadcastEditor();
+	});
+	edPasswordShow = ui::linkButton(tr("Show"));
+	connect(edPasswordShow, &QToolButton::clicked, this, [this]() {
+		const bool hidden = edPassword->echoMode() == QLineEdit::Password;
+		edPassword->setEchoMode(hidden ? QLineEdit::Normal : QLineEdit::Password);
+		edPasswordShow->setText(hidden ? tr("Hide") : tr("Show"));
+	});
+	pwRow->addWidget(edPassword, 1);
+	pwRow->addWidget(edPasswordShow);
+	pwv->addLayout(pwRow);
+	av->addWidget(edPasswordBlock);
 	v->addLayout(av);
 	v->addSpacing(GAP_FIELD);
 
@@ -1288,8 +1508,11 @@ QWidget *Dock::buildBroadcastEditor()
 					   : tr("Each spoken segment gets its own detected language, so speakers can "
 						"switch languages mid-conversation."));
 	};
-	connect(edSpokenMode, &ui::Segmented::changed, this, spokenShown);
-	connect(edSpoken, &QComboBox::activated, this, [this]() { updateBroadcastEditor(); });
+	connect(edSpokenMode, &ui::Segmented::changed, this, [spokenShown, dirty]() {
+		dirty();
+		spokenShown();
+	});
+	connect(edSpoken, &QComboBox::activated, this, dirty);
 	spokenShown();
 	v->addLayout(sv);
 	v->addSpacing(GAP_FIELD);
@@ -1299,16 +1522,17 @@ QWidget *Dock::buildBroadcastEditor()
 	edLabels->addOption(tr("On"), "on");
 	edLabels->addOption(tr("Off"), "off");
 	edLabelsNote = ui::muted();
-	connect(edLabels, &ui::Segmented::changed, this,
-		[this](const QVariant &value) { edLabelsNote->setText(tr(labels_note(value.toString()))); });
+	connect(edLabels, &ui::Segmented::changed, this, [this, dirty](const QVariant &value) {
+		dirty();
+		edLabelsNote->setText(tr(labels_note(value.toString())));
+	});
 	ui::field(v, tr("Default speaker labels"), edLabels, edLabelsNote);
 	v->addStretch(1);
 	outer->addWidget(scrolling(content), 1);
 
-	// Save stays in sight below the scrolling form.
+	// Save stays in sight below the scrolling form, with what it waits for.
 	edError = new QLabel;
 	edError->setWordWrap(true);
-	edError->setProperty("level", "error");
 	auto *foot = new QVBoxLayout;
 	foot->setSpacing(6);
 	foot->addWidget(edError);
@@ -1335,40 +1559,47 @@ void Dock::openBroadcastEditor(const QString &id)
 	editWasPrivate = b.value("access").toString() == "private";
 	editCodeTouched = false;
 	edTitle->setText(editing ? tr("Edit broadcast") : tr("New broadcast"));
-	edSubtitle->setText(editing ? editingOrigCode : tr("One link — attach as many live transcriptions as you like"));
+	edSubtitle->setText(editing ? QString() : tr("One link: attach as many live transcriptions as you like."));
+	edSubtitle->setVisible(!editing);
 	edSave->setText(editing ? tr("Save changes") : tr("Create broadcast"));
 	edName->setText(b.value("name").toString());
-	edLinkPrefix->setText((shareHost.isEmpty() ? QStringLiteral("live.vocalstack.com") : shareHost) + "/");
+	edLinkPrefix->setFullText((shareHost.isEmpty() ? QStringLiteral("live.vocalstack.com") : shareHost) + "/");
 	edCode->setText(editingOrigCode);
 	edCode->setProperty("invalid", false);
 	ui::repolish(edCode);
 	edAccess->setValue(editWasPrivate ? "private" : "public");
 	edPassword->clear();
+	edPassword->setEchoMode(QLineEdit::Password);
+	edPasswordShow->setText(tr("Show"));
 	edSpoken->clear();
 	for (const auto &[name, code] : spokenLanguages)
 		edSpoken->addItem(name, code);
 	const QString lang = editing ? bs.value("spokenLanguage").toString() : settings.spokenLanguage;
 	edSpokenMode->setValue(lang.isEmpty() ? "auto" : "custom");
-	edSpokenMode->changed(edSpokenMode->value());
+	emit edSpokenMode->changed(edSpokenMode->value());
 	edSpoken->setCurrentIndex(qMax(0, edSpoken->findData(lang.isEmpty() ? QStringLiteral("en") : lang)));
 	const QString labels = bs.value("speakerLabels").toString(editing ? "auto" : settings.speakerLabels);
 	edLabels->setValue(labels.isEmpty() ? "auto" : labels);
 	edLabelsNote->setText(tr(labels_note(edLabels->value().toString())));
+	ui::setRole(edError, "muted");
+	set_level(edError, "");
 	edError->clear();
 	edLinkNote->clear();
 	updateBroadcastEditor();
+	editDirty = false;
 	pages->setCurrentIndex(Editor);
 	edName->setFocus();
 }
 
-// What is missing, said by the field at fault; Save waits for it.
+// What is missing, said above Save; Save waits for it.
 void Dock::updateBroadcastEditor()
 {
 	const bool isPrivate = edAccess->value().toString() == "private";
 	const bool editing = !editingId.isEmpty();
-	edPassword->setVisible(isPrivate);
+	edLinkEyebrow->setText(isPrivate ? tr("Private link") : tr("Public link"));
+	edPasswordBlock->setVisible(isPrivate);
 	edPassword->setPlaceholderText(editing && editWasPrivate ? tr("Leave empty to keep the password")
-								 : tr("A password, at least three characters"));
+								 : tr("At least three characters"));
 	edAccessNote->setText(isPrivate ? tr("Listeners need the password to read the transcript.")
 					: tr("Anyone with the link can access the broadcast."));
 
@@ -1377,13 +1608,19 @@ void Dock::updateBroadcastEditor()
 	const QString password = edPassword->text();
 	QString why;
 	if (name.isEmpty())
-		why = tr("Name the broadcast first; its link is made from the name.");
+		why = tr("Name the broadcast; its link is made from the name.");
 	else if (code.size() < 6)
 		why = tr("The link needs at least six characters.");
 	else if (isPrivate && password.size() < 3 && !(editing && editWasPrivate && password.isEmpty()))
 		why = tr("A private broadcast needs a password of at least three characters.");
 	edSave->setEnabled(why.isEmpty());
 	edSave->setToolTip(why);
+	// A server's refusal stays until the next try; otherwise, what Save
+	// waits for.
+	if (edError->property("level").toString() != "error") {
+		ui::setRole(edError, "muted");
+		edError->setText(why);
+	}
 
 	if (!edLinkNote->text().contains("<a ")) // a taken link's suggestions stay until one is picked
 		edLinkNote->setText(code.size() > 0 && code.size() < 6
@@ -1397,6 +1634,7 @@ void Dock::updateBroadcastEditor()
 
 void Dock::saveBroadcast()
 {
+	set_level(edError, "");
 	updateBroadcastEditor();
 	if (!edSave->isEnabled())
 		return;
@@ -1423,32 +1661,37 @@ void Dock::saveBroadcast()
 			bsettings.insert(f, true);
 	}
 	body.insert("settings", bsettings);
+	const QString label = edSave->text();
 	edSave->setEnabled(false);
-	edError->clear();
-	auto done = [this, editing](int status, const QJsonDocument &doc, const QString &error) {
+	edSave->setText(editing ? tr("Saving…") : tr("Creating…"));
+	auto done = [this, editing, label](int status, const QJsonDocument &doc, const QString &error) {
 		edSave->setEnabled(true);
+		edSave->setText(label);
 		if (!error.isEmpty()) {
-			const QJsonArray suggestions = Api::errorDetails(doc).value("suggestions").toArray();
 			if (status == 409) {
+				// Said by the link itself, with the server's suggestions.
 				QStringList links;
-				for (const QJsonValue v : suggestions)
+				for (const QJsonValue v : Api::errorDetails(doc).value("suggestions").toArray())
 					links.append(anchor(this, v.toString(), v.toString()));
 				edLinkNote->setText(links.isEmpty() ? tr("That link is taken. Pick another.")
 								    : tr("That link is taken. Try %1").arg(links.join(", ")));
 				set_level(edLinkNote, "warn");
 				edCode->setProperty("invalid", true);
 				ui::repolish(edCode);
-				edError->setText(tr("That link is taken."));
+				edError->clear();
 			} else {
+				ui::setRole(edError, "");
 				edError->setText(editing ? tr("Could not save the broadcast: %1").arg(error)
 							 : tr("Could not create the broadcast: %1").arg(error));
+				set_level(edError, "error");
 			}
 			return;
 		}
 		settings.broadcastId = doc.object().value("id").toString();
 		settings.save();
+		editDirty = false;
 		pages->setCurrentIndex(Main);
-		loadBroadcasts(); // and its defaults become the dock's
+		loadBroadcasts(true); // and its defaults become the dock's
 	};
 	if (editing)
 		api->patch("/v1/broadcasts/" + editingId, body, done);

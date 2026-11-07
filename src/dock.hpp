@@ -19,6 +19,7 @@ class QMainWindow;
 class QPushButton;
 class QStackedWidget;
 class QTimer;
+class QBoxLayout;
 class QToolButton;
 class QVBoxLayout;
 class Updater;
@@ -61,6 +62,7 @@ protected:
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
 	void changeEvent(QEvent *event) override;
+	void resizeEvent(QResizeEvent *event) override;
 
 private:
 	enum Page { SignedOut, SettingsPage, Main, Editor };
@@ -78,7 +80,7 @@ private:
 	void useKey();
 	void setSigningIn(bool waiting);
 	void loadLists();
-	void loadBroadcasts();
+	void loadBroadcasts(bool choose = false);
 	void fillBroadcasts();
 	void showBroadcastLink();
 	void copyBroadcastLink();
@@ -86,7 +88,11 @@ private:
 	void openTranscription();
 	void onState(Session::State s);
 	void onStatus(const QString &text, Session::Level level);
-	void showNotices(const QStringList &notes);
+	void showNotices(const QStringList &warnings, const QStringList &errors);
+	// Back to the main page; from the editor, after asking when something
+	// was changed.
+	void goBack();
+	void updateLiveSummary();
 	void tickLive();
 	void updateFollowHint();
 	void updateLinks();
@@ -107,12 +113,17 @@ private:
 	bool closeHeld = false;
 	bool darkTheme = true;
 	QStackedWidget *pages;
+	QLabel *logoLabel, *joinLabel;
 
 	// Each broadcast as listed, by id, in the list's order.
 	QHash<QString, QJsonObject> broadcastObjects;
 	QStringList broadcastOrder;
 	QString shareHost;
 	qint64 broadcastsLoadedAt = 0;
+	// The broadcast whose defaults the dock last took, and the list as last
+	// shown (ids and names), so a reload changes neither for nothing.
+	QString appliedBroadcastId, broadcastsShown;
+	bool broadcastsFailed = false;
 	// The languages a broadcast can be spoken in: (name, code), sorted.
 	QList<QPair<QString, QString>> spokenLanguages;
 
@@ -128,9 +139,14 @@ private:
 	// Main page.
 	QLabel *accountLabel;
 	ui::ReloadingCombo *broadcastBox;
-	QComboBox *spokenBox;
+	ui::ReloadingCombo *spokenBox;
 	ui::Segmented *sendSwitch;
-	QToolButton *editBroadcastButton, *copyBroadcastButton;
+	QPushButton *editBroadcastButton;
+	QToolButton *copyBroadcastButton, *broadcastAction;
+	QWidget *spokenBlock, *sendBlock;
+	QLabel *liveSummary;
+	QBoxLayout *transcriptButtons;
+	qint64 lastDurationS = -1;
 	ui::ElidedLabel *broadcastLink;
 	QPushButton *startButton, *openButton, *copyLinkButton;
 	QLabel *followHint, *idleStatus;
@@ -165,14 +181,20 @@ private:
 	ui::Segmented *speakersSwitch;
 	QCheckBox *followBox, *lockBox, *autoUpdateBox;
 	QPushButton *checkUpdatesButton;
-	QLabel *checkUpdatesResult, *settingsAccount;
+	QLabel *checkUpdatesResult, *settingsAccount, *settingsLiveNote;
+	QPushButton *signOutButton;
+	QLabel *signOutNote;
 	// "Check for updates" was clicked: its answer shows under it.
 	bool checkWanted = false;
 
 	// The broadcast editor.
 	QString editingId, editingOrigCode;
-	bool editCodeTouched = false, editWasPrivate = false;
-	QLabel *edTitle, *edSubtitle, *edLinkPrefix, *edLinkNote, *edNameNote, *edAccessNote, *edLabelsNote, *edError;
+	bool editCodeTouched = false, editWasPrivate = false, editDirty = false;
+	QWidget *edPasswordBlock;
+	QToolButton *edPasswordShow;
+	QLabel *edLinkEyebrow;
+	QLabel *edTitle, *edSubtitle, *edLinkNote, *edAccessNote, *edLabelsNote, *edError;
+	ui::ElidedLabel *edLinkPrefix;
 	QLineEdit *edName, *edCode, *edPassword;
 	ui::Segmented *edAccess, *edSpokenMode, *edLabels;
 	QComboBox *edSpoken;

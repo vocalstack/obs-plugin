@@ -43,9 +43,11 @@ Theme Theme::of(const QWidget *w)
 		t.ok = "#047857";
 		t.fgRgb = "0,0,0";
 	}
+	// One "selected" blue for Start and the chosen pill: white on it is
+	// about 6:1.
 	t.primary = "#2968a3";
-	t.primaryHover = "#3382cc";
-	t.primaryText = "#eaecfa";
+	t.primaryHover = "#2f75b5";
+	t.primaryText = "#ffffff";
 	return t;
 }
 
@@ -54,56 +56,80 @@ QString Theme::stylesheet() const
 	// Alphas are 0–255: 10 ≈ 4 %, 18 ≈ 7 %, 26 ≈ 10 %, 31 ≈ 12 %, 56 ≈ 22 %.
 	QString s = R"(
 QLabel[role="eyebrow"] { color: MUTED; }
+QLabel[role="eyebrow"][level="live"] { color: LIVE; }
+QLabel[role="eyebrow"][level="warn"] { color: WARN; }
+QLabel[role="eyebrow"][level="error"] { color: ERROR; }
 QLabel[role="muted"] { color: MUTED; }
 QLabel[level="warn"] { color: WARN; }
 QLabel[level="error"] { color: ERROR; }
 QLabel[role="dot"][level="live"] { color: LIVE; }
 QLabel[role="dot"][level="warn"] { color: WARN; }
 QLabel[role="dot"][level="error"] { color: ERROR; }
-QLabel[role="dot"][level="dim"] { color: rgba(LIVERGB,100); }
+QLabel[role="dot"][level="dim"] { color: rgba(LIVERGB,110); }
 
 QPushButton[role="primary"] {
-	background: PRIMARY; color: PRIMARYTEXT; border: none; border-radius: 8px;
-	font-weight: 600; min-height: 40px; padding: 0 14px;
+	background: PRIMARY; color: PRIMARYTEXT; border: 2px solid transparent; border-radius: 8px;
+	font-weight: 600; min-height: 36px; padding: 0 14px;
 }
 QPushButton[role="primary"]:hover { background: PRIMARYHOVER; }
+QPushButton[role="primary"]:pressed { background: #1f5280; }
+QPushButton[role="primary"]:focus { border-color: rgba(BRANDRGB,210); }
 QPushButton[role="primary"]:disabled { background: rgba(FGRGB,18); color: MUTED; }
 QPushButton[role="danger"] {
-	background: rgba(LIVERGB,56); color: LIVE; border: 1px solid rgba(LIVERGB,140);
-	border-radius: 8px; font-weight: 600; min-height: 40px; padding: 0 14px;
+	background: rgba(LIVERGB,56); color: LIVE; border: 2px solid rgba(LIVERGB,140);
+	border-radius: 8px; font-weight: 600; min-height: 36px; padding: 0 14px;
 }
 QPushButton[role="danger"]:hover { background: rgba(LIVERGB,82); }
+QPushButton[role="danger"]:pressed { background: rgba(LIVERGB,110); }
+QPushButton[role="danger"]:focus { border-color: LIVE; }
 QPushButton[role="danger"]:disabled { color: MUTED; border-color: rgba(FGRGB,26); background: rgba(FGRGB,10); }
-QPushButton[role="secondary"] { min-height: 32px; padding: 0 12px; }
+QPushButton[role="danger"][busy="true"]:disabled { background: rgba(LIVERGB,40); color: LIVE; border-color: rgba(LIVERGB,100); }
+QPushButton[role="secondary"] { min-height: 28px; max-height: 28px; border-radius: 6px; padding: 0 12px; }
+QPushButton[role="edit"] { border-radius: 6px; padding: 0 12px; }
 
-QToolButton[role="link"] { color: BRAND; background: transparent; border: none; padding: 2px 4px; }
-QToolButton[role="link"]:hover { color: PRIMARYHOVER; }
+QToolButton[role="link"] {
+	color: BRAND; background: transparent; border: 1px solid transparent; border-radius: 4px;
+	padding: 2px 4px; min-height: 22px;
+}
+QToolButton[role="link"]:hover { color: PRIMARYHOVERTEXT; background: rgba(FGRGB,13); }
+QToolButton[role="link"]:pressed { background: rgba(FGRGB,20); }
+QToolButton[role="link"]:focus { border-color: rgba(BRANDRGB,160); }
 QToolButton[role="link"]:disabled { color: MUTED; }
-QToolButton[role="edit"] { padding: 0 12px; }
-QToolButton[role="close"] { color: MUTED; background: transparent; border: none; padding: 0 2px; }
-QToolButton[role="close"]:hover { color: BRAND; }
+QToolButton[role="link"][tone="muted"] { color: MUTED; }
+QToolButton[role="link"][tone="muted"]:hover { color: BRAND; }
+QToolButton[role="close"] { color: MUTED; background: transparent; border: none; border-radius: 4px; }
+QToolButton[role="close"]:hover { color: palette(text); background: rgba(FGRGB,20); }
+QToolButton[role="toggle"] {
+	color: MUTED; background: transparent; border: 1px solid rgba(FGRGB,40); border-radius: 4px;
+	padding: 1px 6px; font-weight: 600;
+}
+QToolButton[role="toggle"]:checked { background: PRIMARY; border-color: PRIMARY; color: #ffffff; }
+QToolButton[role="toggle"]:focus { border-color: rgba(BRANDRGB,210); }
 
 QFrame[role="card"] { background: rgba(FGRGB,10); border: 1px solid rgba(FGRGB,18); border-radius: 10px; }
+QFrame[role="rule"] { background: rgba(FGRGB,18); border: none; min-height: 1px; max-height: 1px; }
 QFrame[role="callout"] { border: none; border-radius: 6px; border-left: 3px solid BRAND; background: rgba(BRANDRGB,31); }
 QFrame[role="callout"][tone="warn"] { border-left-color: WARN; background: rgba(WARNRGB,31); }
 QFrame[role="callout"][tone="error"] { border-left-color: ERROR; background: rgba(ERRORRGB,31); }
 
-QFrame[role="segmented"] { background: rgba(FGRGB,13); border: 1px solid rgba(FGRGB,26); border-radius: 15px; }
+QFrame[role="segmented"] { background: rgba(FGRGB,13); border: 1px solid rgba(FGRGB,26); border-radius: 18px; }
 QFrame[role="segmented"] QPushButton {
-	border: none; border-radius: 13px; padding: 5px 12px; background: transparent; min-height: 20px;
+	border: 2px solid transparent; border-radius: 14px; padding: 0 12px; background: transparent;
 }
 QFrame[role="segmented"] QPushButton:hover { background: rgba(FGRGB,13); }
-QFrame[role="segmented"] QPushButton:checked { background: CHECKEDBG; color: #ffffff; font-weight: 600; }
+QFrame[role="segmented"] QPushButton:pressed { background: rgba(FGRGB,20); }
+QFrame[role="segmented"] QPushButton:focus { border-color: rgba(BRANDRGB,210); }
+QFrame[role="segmented"] QPushButton:checked { background: PRIMARY; color: #ffffff; font-weight: 600; }
 QFrame[role="segmented"] QPushButton:disabled { color: MUTED; }
-QFrame[role="segmented"] QPushButton:checked:disabled { background: rgba(BRANDRGB,82); }
+QFrame[role="segmented"] QPushButton:checked:disabled { background: rgba(BRANDRGB,70); color: rgba(255,255,255,200); }
 
 QLineEdit[invalid="true"], QComboBox[invalid="true"] { border: 1px solid ERROR; border-radius: 4px; }
 QScrollArea[role="page"], QScrollArea[role="page"] > QWidget > QWidget { background: transparent; }
 )";
-	s.replace("PRIMARYHOVER", primaryHover)
+	s.replace("PRIMARYHOVERTEXT", dark ? "#85b4e0" : "#1f4e7a")
+		.replace("PRIMARYHOVER", primaryHover)
 		.replace("PRIMARYTEXT", primaryText)
 		.replace("PRIMARY", primary)
-		.replace("CHECKEDBG", dark ? "#3382cc" : "#2968a3")
 		.replace("BRANDRGB", brandRgb)
 		.replace("BRAND", brand)
 		.replace("MUTED", muted)
@@ -135,10 +161,10 @@ QLabel *eyebrow(const QString &text, QWidget *parent)
 	auto *l = new QLabel(text, parent);
 	l->setProperty("role", "eyebrow");
 	QFont f = l->font();
-	f.setPointSizeF(f.pointSizeF() * 0.82);
+	f.setPointSizeF(f.pointSizeF() * 0.78);
 	f.setCapitalization(QFont::AllUppercase);
-	f.setLetterSpacing(QFont::AbsoluteSpacing, 1.2);
-	f.setWeight(QFont::DemiBold);
+	f.setLetterSpacing(QFont::AbsoluteSpacing, 1.5);
+	f.setWeight(QFont::Medium);
 	l->setFont(f);
 	return l;
 }
@@ -162,25 +188,44 @@ QLabel *title(const QString &text, QWidget *parent)
 	return l;
 }
 
-void field(QVBoxLayout *into, const QString &label, QWidget *control, QWidget *note)
+QWidget *field(QVBoxLayout *into, const QString &label, QWidget *control, QWidget *note)
 {
-	auto *block = new QVBoxLayout;
-	block->setSpacing(GAP_LABEL);
-	block->addWidget(eyebrow(label));
-	block->addWidget(control);
+	auto *block = new QWidget;
+	auto *v = new QVBoxLayout(block);
+	v->setContentsMargins(0, 0, 0, 0);
+	v->setSpacing(GAP_LABEL);
+	v->addWidget(eyebrow(label));
+	v->addWidget(control);
 	if (note)
-		block->addWidget(note);
-	into->addLayout(block);
+		v->addWidget(note);
+	into->addWidget(block);
+	return block;
 }
 
-QToolButton *linkButton(const QString &text, QWidget *parent)
+QFrame *rule(QWidget *parent)
+{
+	auto *f = new QFrame(parent);
+	f->setProperty("role", "rule");
+	f->setFixedHeight(1);
+	return f;
+}
+
+QToolButton *linkButton(const QString &text, QWidget *parent, const char *tone)
 {
 	auto *b = new QToolButton(parent);
 	b->setText(text);
 	b->setAutoRaise(true);
 	b->setCursor(Qt::PointingHandCursor);
 	b->setProperty("role", "link");
+	if (tone)
+		b->setProperty("tone", tone);
 	return b;
+}
+
+void tabFocusOnly(QWidget *root)
+{
+	for (QAbstractButton *b : root->findChildren<QAbstractButton *>())
+		b->setFocusPolicy(Qt::TabFocus);
 }
 
 void flash(QAbstractButton *button, const QString &text, int ms)
@@ -204,7 +249,7 @@ Segmented::Segmented(QWidget *parent) : QFrame(parent), group(new QButtonGroup(t
 	setProperty("role", "segmented");
 	group->setExclusive(true);
 	auto *h = new QHBoxLayout(this);
-	h->setContentsMargins(2, 2, 2, 2);
+	h->setContentsMargins(3, 3, 3, 3);
 	h->setSpacing(0);
 	connect(group, &QButtonGroup::buttonClicked, this,
 		[this](QAbstractButton *b) { emit changed(b->property("value")); });
@@ -217,9 +262,11 @@ void Segmented::addOption(const QString &label, const QVariant &value)
 	b->setCheckable(true);
 	b->setCursor(Qt::PointingHandCursor);
 	b->setProperty("value", value);
+	b->setFixedHeight(28);
+	// As wide as its bold (selected) label, so it never clips.
 	QFont bold = b->font();
 	bold.setWeight(QFont::DemiBold);
-	b->setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 2 * 12 + 6);
+	b->setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 2 * 12 + 8);
 	group->addButton(b);
 	layout()->addWidget(b);
 	if (group->buttons().size() == 1)
@@ -245,19 +292,21 @@ Callout::Callout(QWidget *parent) : QFrame(parent)
 	setProperty("role", "callout");
 	setProperty("tone", "info");
 	auto *outer = new QVBoxLayout(this);
-	outer->setContentsMargins(10, 8, 6, 8);
+	outer->setContentsMargins(10, 6, 4, 8);
 	outer->setSpacing(6);
 	auto *row = new QHBoxLayout;
-	row->setSpacing(6);
+	row->setSpacing(4);
 	text = new QLabel(this);
 	text->setWordWrap(true);
 	text->setTextFormat(Qt::RichText);
 	text->setTextInteractionFlags(Qt::TextBrowserInteraction);
+	text->setContentsMargins(0, 2, 0, 0);
 	connect(text, &QLabel::linkActivated, this, &Callout::linkActivated);
 	close = new QToolButton(this);
 	close->setText(QStringLiteral("✕"));
 	close->setToolTip(tr("Dismiss"));
 	close->setAutoRaise(true);
+	close->setFixedSize(24, 24);
 	close->setProperty("role", "close");
 	connect(close, &QToolButton::clicked, this, &Callout::dismissed);
 	row->addWidget(text, 1);

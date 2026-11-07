@@ -224,9 +224,13 @@ void Session::ensureTranscription(Next next)
 		 });
 }
 
+// "OBS on Alexs-MacBook-Pro": the computer's name, without macOS's .local.
 static QString default_name()
 {
-	return QStringLiteral("OBS on %1").arg(QHostInfo::localHostName());
+	QString host = QHostInfo::localHostName();
+	if (host.endsWith(".local"))
+		host.chop(6);
+	return QStringLiteral("OBS on %1").arg(host);
 }
 
 // VocalStack's capture settings for the transcription, from the dock.
@@ -613,9 +617,11 @@ void Session::onFrame(const QString &text)
 		// engine_lost ends the stream's transcription (the feed closes
 		// next); another retryable error is the feed's own, and the
 		// resubscribe that follows the close mends it.
-		if (code == "engine_lost" || !f.value("retryable").toBool())
+		if (code == "engine_lost" || !f.value("retryable").toBool()) {
+			feedError = true;
 			setNotes(languageNote,
 				 message.isEmpty() ? tr("VocalStack stopped transcribing (%1)").arg(code) : message);
+		}
 	} else if (type == "recording.settings") {
 		// Changed in the dashboard while recording: the dock follows.
 		const QJsonObject s = f.value("settings").toObject();
@@ -629,12 +635,13 @@ void Session::onFrame(const QString &text)
 		}
 	} else if (type == "recording.expiring") {
 		const int minutes = qMax(1, int(f.value("endsInS").toDouble() / 60));
+		feedError = false;
 		setNotes(languageNote, tr("VocalStack ends this recording in %n minute(s): the plan's longest recording. "
 					  "Stop and start again for a new one.",
 					  nullptr, minutes));
 	} else if (type == "recording.silence") {
 		const int silent = int(f.value("silentS").toDouble()), in = int(f.value("pausesInS").toDouble());
-		emit status(tr("No speech for %1 s · pauses in %2 s").arg(silent).arg(in), Session::Level::Warn);
+		emit status(tr("No speech for %1 s. Pausing in %2 s.").arg(silent).arg(in), Session::Level::Warn);
 	} else if (type == "recording.state") {
 		const QString s = f.value("state").toString();
 		if (st != State::Live)
@@ -731,11 +738,12 @@ void Session::setNotes(const QString &language, const QString &feed)
 {
 	languageNote = language;
 	feedNote = feed;
-	QStringList notes;
-	for (const QString &n : {feedNote, languageNote})
-		if (!n.isEmpty())
-			notes.append(n);
-	emit notices(notes);
+	QStringList warnings, errors;
+	if (!feedNote.isEmpty())
+		(feedError ? errors : warnings).append(feedNote);
+	if (!languageNote.isEmpty())
+		warnings.append(languageNote);
+	emit notices(warnings, errors);
 }
 
 // Whether VocalStack hears the stream: the plugin's key's live state.
