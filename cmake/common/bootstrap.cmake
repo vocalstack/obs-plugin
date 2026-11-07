@@ -88,5 +88,8 @@ endif()
 
 # Disable exports automatically going into the CMake package registry
 set(CMAKE_EXPORT_PACKAGE_REGISTRY FALSE)
-# Enable default inclusion of targets' source and binary directory
-set(CMAKE_INCLUDE_CURRENT_DIR TRUE)
+# Targets include their binary directory (generated files such as plugin-support.c) but
+# not the source root: on macOS and Windows a file there named VERSION would be found for
+# the C++ standard header <version>, as the filesystem ignores case.
+set(CMAKE_INCLUDE_CURRENT_DIR FALSE)
+include_directories("${CMAKE_CURRENT_BINARY_DIR}")
