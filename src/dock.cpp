@@ -16,6 +16,7 @@
 #include <QComboBox>
 #include <QDockWidget>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QDesktopServices>
 #include <QEvent>
 #include <QHBoxLayout>
@@ -35,9 +36,6 @@
 #include <QVBoxLayout>
 
 #include <initializer_list>
-
-// Caption box choices that are not a language.
-static const char *CAPTIONS_OFF = "off";
 
 // Where an update is read about and downloaded by hand: the plugin's page
 // on the VocalStack website.
@@ -71,10 +69,13 @@ Dock::Dock(QWidget *parent)
 {
 	auto *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(8, 8, 8, 8);
+	layout->addSpacing(12);
 	auto *head = new QHBoxLayout;
+	head->addStretch(1);
 	head->addWidget(logo(this));
 	head->addStretch(1);
 	layout->addLayout(head);
+	layout->addSpacing(14);
 	// A newer release: what it is and how it is going, and the button that
 	// installs it when it is not installed by itself.
 	auto *updateRow = new QHBoxLayout;
@@ -96,6 +97,11 @@ Dock::Dock(QWidget *parent)
 	version->setStyleSheet("color: #8b8b96;");
 	version->setAlignment(Qt::AlignRight);
 	layout->addWidget(version);
+	// Captions show always, in the language spoken; the transcription keeps
+	// its default name.
+	settings.captionLanguage.clear();
+	settings.showCaptions = true;
+	settings.transcriptionName.clear();
 	pages->addWidget(buildSignedOut());
 	pages->addWidget(buildSignedIn());
 
@@ -123,12 +129,6 @@ Dock::Dock(QWidget *parent)
 			obs_log(LOG_WARNING, "%s", text.toUtf8().constData());
 		sessionNotice->setText(text);
 		sessionNotice->setVisible(!text.isEmpty());
-	});
-	connect(session, &Session::captionLanguageRefused, this, [this](const QString &message) {
-		captionBox->setCurrentIndex(qMax(0, captionBox->findData(QString())));
-		setStatus(sessionStatus, message.isEmpty() ? tr("VocalStack refused that caption language: captions as spoken")
-							   : tr("Captions as spoken: %1").arg(message),
-			  true);
 	});
 	connect(session, &Session::spokenLanguageChanged, this, [this](const QString &lang) {
 		spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(lang)));
@@ -221,16 +221,6 @@ QWidget *Dock::buildSignedIn()
 	auto *form = new QFormLayout;
 	form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
-	nameEdit = new QLineEdit;
-	nameEdit->setPlaceholderText(QStringLiteral("OBS on %1").arg(QHostInfo::localHostName()));
-	nameEdit->setText(settings.transcriptionName);
-	nameEdit->setToolTip(tr("The transcription's name in VocalStack"));
-	connect(nameEdit, &QLineEdit::editingFinished, this, [this]() {
-		settings.transcriptionName = nameEdit->text().trimmed().left(200);
-		settings.save();
-	});
-	form->addRow(tr("Name"), nameEdit);
-
 	auto *broadcastRow = new QHBoxLayout;
 	broadcastBox = new QComboBox;
 	auto *refresh = new QToolButton;
@@ -276,16 +266,6 @@ QWidget *Dock::buildSignedIn()
 			warm->languageChanged();
 	});
 
-	captionBox = new QComboBox;
-	form->addRow(tr("Captions"), captionBox);
-	connect(captionBox, &QComboBox::activated, this, [this]() {
-		const QString v = captionBox->currentData().toString();
-		settings.showCaptions = v != CAPTIONS_OFF;
-		if (overlay && !settings.showCaptions)
-			overlay->setCaption(QString());
-		session->setCaptionLanguage(settings.showCaptions ? v : settings.captionLanguage);
-	});
-
 	speakersBox = new QComboBox;
 	speakersBox->addItem(tr("When needed"), "auto");
 	speakersBox->addItem(tr("On"), "on");
@@ -295,19 +275,6 @@ QWidget *Dock::buildSignedIn()
 	form->addRow(tr("Speaker labels"), speakersBox);
 	connect(speakersBox, &QComboBox::activated, this, [this]() {
 		settings.speakerLabels = speakersBox->currentData().toString();
-		settings.save();
-	});
-
-	latencyBox = new QComboBox;
-	latencyBox->addItem(tr("Automatic"), "auto");
-	latencyBox->addItem(tr("Fast"), "fast");
-	latencyBox->addItem(tr("Accurate"), "accuracy");
-	latencyBox->setToolTip(tr("Automatic: the accurate model, the fast one only while it falls behind. "
-				  "Fast: lowest latency. Accurate: never switches."));
-	latencyBox->setCurrentIndex(qMax(0, latencyBox->findData(settings.latencyMode)));
-	form->addRow(tr("Transcription"), latencyBox);
-	connect(latencyBox, &QComboBox::activated, this, [this]() {
-		settings.latencyMode = latencyBox->currentData().toString();
 		settings.save();
 	});
 
@@ -339,16 +306,6 @@ QWidget *Dock::buildSignedIn()
 	});
 	v->addWidget(followBox);
 
-	autoUpdateBox = new QCheckBox(tr("Install updates automatically"));
-	autoUpdateBox->setToolTip(tr("A newer release is installed while nothing is being transcribed; restart OBS to use it"));
-	autoUpdateBox->setChecked(settings.autoUpdate);
-	connect(autoUpdateBox, &QCheckBox::toggled, this, [this](bool on) {
-		settings.autoUpdate = on;
-		settings.save();
-		showUpdate();
-	});
-	v->addWidget(autoUpdateBox);
-
 	startButton = new QPushButton(tr("Start transcribing"));
 	startButton->setMinimumHeight(32);
 	connect(startButton, &QPushButton::clicked, this, &Dock::toggle);
@@ -360,13 +317,6 @@ QWidget *Dock::buildSignedIn()
 	followHint->setStyleSheet("color: #8b8b96;"); // muted on dark and light themes
 	v->addWidget(followHint);
 	updateFollowHint();
-
-	// The plan's longest recording, once VocalStack has said.
-	limitHint = new QLabel;
-	limitHint->setWordWrap(true);
-	limitHint->setStyleSheet("color: #8b8b96;");
-	limitHint->hide();
-	v->addWidget(limitHint);
 
 	sessionStatus = new QLabel;
 	sessionStatus->setWordWrap(true);
@@ -395,6 +345,19 @@ QWidget *Dock::buildSignedIn()
 	v->addLayout(links);
 	updateLinks();
 	v->addStretch(1);
+
+	auto *prefs = new QGroupBox(tr("Settings"));
+	auto *pv = new QVBoxLayout(prefs);
+	autoUpdateBox = new QCheckBox(tr("Install updates automatically"));
+	autoUpdateBox->setToolTip(tr("A newer release is installed while nothing is being transcribed; restart OBS to use it"));
+	autoUpdateBox->setChecked(settings.autoUpdate);
+	connect(autoUpdateBox, &QCheckBox::toggled, this, [this](bool on) {
+		settings.autoUpdate = on;
+		settings.save();
+		showUpdate();
+	});
+	pv->addWidget(autoUpdateBox);
+	v->addWidget(prefs);
 
 	// Who is signed in, at the foot.
 	auto *account = new QHBoxLayout;
@@ -426,7 +389,6 @@ void Dock::applyBroadcastDefaults(const QString &id)
 	settings.save();
 	spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(settings.spokenLanguage)));
 	speakersBox->setCurrentIndex(qMax(0, speakersBox->findData(settings.speakerLabels)));
-	latencyBox->setCurrentIndex(qMax(0, latencyBox->findData(settings.latencyMode)));
 	if (langChanged)
 		warm->languageChanged();
 }
@@ -478,21 +440,13 @@ void Dock::showUpdate()
 }
 
 // The link buttons follow whether there is a transcription or a broadcast
-// yet; the limit hint, the plan's longest recording.
+// yet.
 void Dock::updateLinks()
 {
 	const bool tx = !settings.transcriptionId.isEmpty();
 	openButton->setEnabled(tx);
 	copyLinkButton->setEnabled(tx);
 	copyBroadcastButton->setEnabled(broadcastLinks.contains(settings.broadcastId));
-	if (settings.maxDurationS > 0) {
-		const int h = settings.maxDurationS / 3600, m = (settings.maxDurationS % 3600) / 60;
-		limitHint->setText(m == 0 ? tr("Your plan records up to %n hour(s) at a time.", nullptr, h)
-					  : tr("Your plan records up to %1 h %2 min at a time.").arg(h).arg(m));
-		limitHint->show();
-	} else {
-		limitHint->hide();
-	}
 }
 
 void Dock::openTranscription()
@@ -654,14 +608,6 @@ void Dock::loadLists()
 			spokenBox->addItem(name, code);
 		spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(settings.spokenLanguage)));
 
-		captionBox->clear();
-		captionBox->addItem(tr("Off"), CAPTIONS_OFF);
-		captionBox->addItem(tr("As spoken"), QString());
-		for (const auto &[name, code] : sorted(o.value("translation").toArray()))
-			captionBox->addItem(tr("In %1").arg(name), code);
-		captionBox->setCurrentIndex(settings.showCaptions
-						    ? qMax(1, captionBox->findData(settings.captionLanguage))
-						    : 0);
 	});
 }
 
@@ -690,6 +636,7 @@ void Dock::loadBroadcasts()
 			settings.broadcastId.clear(); // deleted or archived since
 			settings.save();
 		}
+		applyBroadcastDefaults(settings.broadcastId);
 		updateLinks();
 	});
 }
@@ -722,8 +669,7 @@ void Dock::onState(Session::State s)
 								  : tr("Stop transcribing"));
 	startButton->setEnabled(s != Session::State::Stopping);
 	updateFollowHint();
-	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, spokenBox, sendBox, nameEdit, speakersBox,
-							  latencyBox, lockBox})
+	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, spokenBox, sendBox, speakersBox, lockBox})
 		w->setEnabled(idle);
 	updateLinks();
 	showUpdate(); // idle again: an update waiting may install

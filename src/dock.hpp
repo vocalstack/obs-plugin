@@ -90,11 +90,10 @@ private:
 	QLabel *signInStatus;
 	// Signed in.
 	QLabel *accountLabel;
-	QComboBox *broadcastBox, *spokenBox, *captionBox, *sendBox, *speakersBox, *latencyBox;
-	QLineEdit *nameEdit;
+	QComboBox *broadcastBox, *spokenBox, *sendBox, *speakersBox;
 	QCheckBox *followBox, *lockBox, *autoUpdateBox;
 	QToolButton *copyBroadcastButton, *copyLinkButton, *openButton;
-	QLabel *listenersLabel, *limitHint;
+	QLabel *listenersLabel;
 	QPushButton *startButton, *updateButton;
 	QLabel *followHint, *sessionStatus, *sessionNotice, *updateNotice;
 };
