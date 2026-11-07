@@ -800,6 +800,12 @@ QWidget *Dock::buildSettings()
 	checkUpdatesButton = new QPushButton(tr("Check for updates"));
 	checkUpdatesButton->setProperty("role", "secondary");
 	connect(checkUpdatesButton, &QPushButton::clicked, this, [this]() {
+		// A newer release waiting: this is Update now.
+		if (updater->age() != Updater::Age::Current && updater->step() == Updater::Step::Idle) {
+			updateWanted = true;
+			showUpdate();
+			return;
+		}
 		checkWanted = true;
 		checkUpdatesButton->setEnabled(false);
 		checkUpdatesResult->setText(tr("Checking…"));
@@ -1104,20 +1110,40 @@ void Dock::showUpdate()
 	const Updater::Age age = updater->age();
 	const Updater::Step step = updater->step();
 	const QString latest = updater->latest();
-	// The answer to "Check for updates", once the check is done.
-	if (checkWanted && step != Updater::Step::Checking) {
-		checkWanted = false;
-		checkUpdatesButton->setEnabled(true);
-		if (!updater->checkError().isEmpty())
-			checkUpdatesResult->setText(tr("Could not check: %1").arg(updater->checkError()));
-		else if (step == Updater::Step::Installed || step == Updater::Step::OnExit)
-			checkUpdatesResult->setText(tr("%1 is installed; restart OBS to use it.").arg(latest));
-		else if (step != Updater::Step::Idle)
-			checkUpdatesResult->setText(tr("Updating to %1…").arg(latest));
-		else if (age == Updater::Age::Current)
-			checkUpdatesResult->setText(tr("You have the latest version."));
+	// Settings → About follows the update as it goes: the check's answer,
+	// the download and install with a spinner, then a check mark.
+	{
+		const bool working = step == Updater::Step::Downloading || step == Updater::Step::Installing;
+		const bool installed = step == Updater::Step::Installed || step == Updater::Step::OnExit;
+		const bool waiting = age != Updater::Age::Current && step == Updater::Step::Idle;
+		QString about;
+		if (step == Updater::Step::Checking && checkWanted)
+			about = tr("Checking…");
+		else if (working)
+			about = QStringLiteral("%1  %2").arg(ui::SPINNER.at(updateSpinFrame % ui::SPINNER.size()),
+							     step == Updater::Step::Downloading ? tr("Downloading %1…").arg(latest)
+												: tr("Installing %1…").arg(latest));
+		else if (installed)
+			about = step == Updater::Step::OnExit ? tr("✓ %1 is ready: quit OBS to finish installing it.").arg(latest)
+							      : tr("✓ %1 is installed. Restart OBS to use it.").arg(latest);
+		else if (waiting && updater->problem())
+			about = updater->message();
+		else if (waiting && (updateWanted || settings.autoUpdate) && session->state() != Session::State::Idle)
+			about = tr("%1 installs once you stop transcribing.").arg(latest);
+		else if (waiting)
+			about = tr("Version %1 is out.").arg(latest);
+		else if (checkWanted && !updater->checkError().isEmpty())
+			about = tr("Could not check: %1").arg(updater->checkError());
+		else if (checkWanted)
+			about = tr("You have the latest version.");
 		else
-			checkUpdatesResult->setText(tr("Version %1 is out.").arg(latest));
+			about = checkUpdatesResult->text().startsWith(tr("You have")) ? checkUpdatesResult->text() : QString();
+		if (step != Updater::Step::Checking)
+			checkWanted = false;
+		checkUpdatesResult->setText(about);
+		set_level(checkUpdatesResult, waiting && updater->problem() ? "warn" : "");
+		checkUpdatesButton->setText(waiting && !updater->problem() ? tr("Update now") : tr("Check for updates"));
+		checkUpdatesButton->setEnabled(!working && step != Updater::Step::Checking && !installed);
 	}
 	QString text = updater->message().toHtmlEscaped();
 	bool problem = updater->problem();
