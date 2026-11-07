@@ -409,6 +409,22 @@ QWidget *Dock::buildSettings()
 		showUpdate();
 	});
 	uv->addWidget(autoUpdateBox);
+	auto *checkRow = new QHBoxLayout;
+	checkUpdatesButton = new QPushButton(tr("Check for updates"));
+	connect(checkUpdatesButton, &QPushButton::clicked, this, [this]() {
+		checkWanted = true;
+		checkUpdatesButton->setEnabled(false);
+		checkUpdatesResult->setText(tr("Checking…"));
+		updater->check(true);
+		if (updater->step() != Updater::Step::Checking)
+			showUpdate(); // busy downloading or installing: say so now
+	});
+	checkUpdatesResult = new QLabel;
+	checkUpdatesResult->setWordWrap(true);
+	checkUpdatesResult->setStyleSheet("color: #8b8b96;");
+	checkRow->addWidget(checkUpdatesButton);
+	checkRow->addWidget(checkUpdatesResult, 1);
+	uv->addLayout(checkRow);
 	v->addWidget(updates);
 	v->addStretch(1);
 	return page;
@@ -443,6 +459,21 @@ void Dock::showUpdate()
 	const Updater::Age age = updater->age();
 	const Updater::Step step = updater->step();
 	const QString latest = updater->latest();
+	// The answer to "Check for updates", once the check is done.
+	if (checkWanted && step != Updater::Step::Checking) {
+		checkWanted = false;
+		checkUpdatesButton->setEnabled(true);
+		if (!updater->checkError().isEmpty())
+			checkUpdatesResult->setText(tr("Could not check: %1").arg(updater->checkError()));
+		else if (step == Updater::Step::Installed || step == Updater::Step::OnExit)
+			checkUpdatesResult->setText(tr("%1 is installed; restart OBS to use it.").arg(latest));
+		else if (step != Updater::Step::Idle)
+			checkUpdatesResult->setText(tr("Updating to %1…").arg(latest));
+		else if (age == Updater::Age::Current)
+			checkUpdatesResult->setText(tr("You have the latest version (%1).").arg(PLUGIN_VERSION));
+		else
+			checkUpdatesResult->setText(tr("Version %1 is out.").arg(latest));
+	}
 	QString text = updater->message();
 	bool problem = updater->problem();
 	const bool pending = age != Updater::Age::Current && step == Updater::Step::Idle;

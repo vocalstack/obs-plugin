@@ -78,7 +78,7 @@ void Updater::say(Step s, const QString &message, bool problem)
 void Updater::check(bool force)
 {
 	const qint64 now = QDateTime::currentMSecsSinceEpoch();
-	if (st != Step::Idle && st != Step::Checking)
+	if (st != Step::Idle)
 		return;
 	if (!force && checkedAt && now - checkedAt < FRESH_MS)
 		return;
@@ -93,9 +93,11 @@ void Updater::check(bool force)
 		const QString tag = release.value("tag_name").toString();
 		static const QRegularExpression version("^\\d+\\.\\d+\\.\\d+$");
 		if (!error.isEmpty() || !version.match(tag).hasMatch()) {
+			lastCheckError = error.isEmpty() ? tr("GitHub gave no release") : error;
 			say(Step::Idle, QString());
 			return;
 		}
+		lastCheckError.clear();
 		latestVersion = tag;
 		assetUrl.clear();
 		assetSha.clear();

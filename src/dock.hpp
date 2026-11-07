@@ -83,6 +83,10 @@ private:
 	// "Update now" was clicked: the update installs once nothing is being
 	// transcribed, even with automatic updates off.
 	bool updateWanted = false;
+	// "Check for updates" was clicked: its answer shows beside it.
+	bool checkWanted = false;
+	QPushButton *checkUpdatesButton;
+	QLabel *checkUpdatesResult;
 	// Each broadcast's link and capture settings, by id, from the last load.
 	QHash<QString, QString> broadcastLinks;
 	QHash<QString, QJsonObject> broadcastSettings;

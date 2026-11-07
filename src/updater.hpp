@@ -40,6 +40,8 @@ public:
 	Step step() const { return st; }
 	// What the dock says, and whether it is a problem.
 	QString message() const { return text; }
+	// Why the last check got no answer; empty when it did.
+	QString checkError() const { return lastCheckError; }
 	bool problem() const { return bad; }
 	// Whether this platform can install the release itself.
 	static bool canInstall();
@@ -69,4 +71,5 @@ private:
 	// Windows: the unpacked release, copied in when OBS quits.
 	QString staged;
 	bool bad = false;
+	QString lastCheckError;
 };
