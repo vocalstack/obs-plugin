@@ -1,5 +1,7 @@
 # VocalStack for OBS Studio
 
+[![Push](https://github.com/vocalstack/obs-plugin/actions/workflows/push.yaml/badge.svg)](https://github.com/vocalstack/obs-plugin/actions/workflows/push.yaml) [![Notarized](https://github.com/vocalstack/obs-plugin/actions/workflows/notarized.yml/badge.svg)](https://github.com/vocalstack/obs-plugin/actions/workflows/notarized.yml)
+
 Transcribe your OBS stream live with [VocalStack](https://vocalstack.com/obs-studio-transcription-plugin/), and
 see the captions over OBS's preview. Captions never go into your stream or recordings.
 

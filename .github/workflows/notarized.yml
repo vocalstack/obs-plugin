@@ -1,0 +1,36 @@
+name: Notarized
+
+# Is the installer people download notarized? Downloads the `latest` release
+# (what vocalstack.com links) and asks Gatekeeper about the macOS installer
+# package, with its stapled ticket. Runs after each release build, daily (a
+# revoked certificate or ticket turns it red), and by hand. Its badge is in
+# the README.
+on:
+  workflow_run:
+    workflows: [Push]
+    types: [completed]
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    # After Push: only a version tag's run, which publishes a release.
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch != 'main')
+    runs-on: macos-15
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: The latest release is notarized
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          gh release download latest -R "$GITHUB_REPOSITORY" -p vocalstack-obs-macos.pkg
+          version=$(gh release view latest -R "$GITHUB_REPOSITORY" --json name --jq .name)
+          echo "### $version" >> "$GITHUB_STEP_SUMMARY"
+          spctl -a -vv -t install vocalstack-obs-macos.pkg 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | grep -q 'source=Notarized Developer ID'
+          xcrun stapler validate vocalstack-obs-macos.pkg
+          echo "Installer package: notarized, ticket stapled." >> "$GITHUB_STEP_SUMMARY"
