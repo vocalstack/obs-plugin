@@ -12,6 +12,7 @@
 !.gitignore
 !buildspec.json
 !VERSION
+!Makefile
 !CMakeLists.txt
 !CMakePresets.json
 !LICENSE
