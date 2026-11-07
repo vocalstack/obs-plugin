@@ -5,6 +5,7 @@
 // widgets by their `role` property, and the few components the dock is
 // built from.
 
+#include <QAbstractButton>
 #include <QComboBox>
 #include <QFrame>
 #include <QLabel>
@@ -93,6 +94,37 @@ private:
 	QToolButton *close;
 	QWidget *actions;
 };
+
+// An on/off switch (a sliding pill), for settings.
+class Switch : public QAbstractButton {
+	Q_OBJECT
+
+public:
+	explicit Switch(QWidget *parent = nullptr);
+	QSize sizeHint() const override;
+
+protected:
+	void paintEvent(QPaintEvent *event) override;
+};
+
+// A card: a rounded panel holding rows, with hairlines between them.
+class Card : public QFrame {
+	Q_OBJECT
+
+public:
+	explicit Card(QWidget *parent = nullptr);
+	// A row; a hairline goes above every row but the first.
+	void addRow(QWidget *row);
+	void addLayoutRow(QLayout *row);
+
+private:
+	QVBoxLayout *rows;
+	int count = 0;
+};
+
+// A setting as a row: its name and a note on the left, its control on the
+// right.
+QWidget *settingRow(const QString &name, const QString &note, QWidget *control);
 
 // One line of text that elides in its middle to fit (a long link).
 class ElidedLabel : public QLabel {

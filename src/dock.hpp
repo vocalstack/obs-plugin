@@ -31,6 +31,7 @@ class Callout;
 class ElidedLabel;
 class ReloadingCombo;
 class Segmented;
+class Switch;
 } // namespace ui
 
 // The VocalStack dock: sign-in, then what to send and where, Start/Stop,
@@ -184,7 +185,7 @@ private:
 	// Settings page.
 	QLineEdit *nameEdit;
 	ui::Segmented *speakersSwitch;
-	QCheckBox *followBox, *lockBox, *autoUpdateBox;
+	ui::Switch *followBox, *lockBox, *autoUpdateBox;
 	QPushButton *checkUpdatesButton;
 	QLabel *checkUpdatesResult, *settingsAccount, *settingsLiveNote;
 	QPushButton *signOutButton;

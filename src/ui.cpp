@@ -3,6 +3,7 @@
 #include <QAbstractButton>
 #include <QButtonGroup>
 #include <QHBoxLayout>
+#include <QPainter>
 #include <QPointer>
 #include <QPushButton>
 #include <QStyle>
@@ -379,6 +380,93 @@ void ElidedLabel::resizeEvent(QResizeEvent *event)
 void ElidedLabel::refit()
 {
 	QLabel::setText(fontMetrics().elidedText(full, Qt::ElideMiddle, qMax(0, width())));
+}
+
+Switch::Switch(QWidget *parent) : QAbstractButton(parent)
+{
+	setCheckable(true);
+	setCursor(Qt::PointingHandCursor);
+	setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+}
+
+QSize Switch::sizeHint() const
+{
+	return QSize(40, 22);
+}
+
+void Switch::paintEvent(QPaintEvent *)
+{
+	const Theme t = Theme::of(this);
+	QPainter p(this);
+	p.setRenderHint(QPainter::Antialiasing);
+	const QRectF track = QRectF(rect()).adjusted(1, 1, -1, -1);
+	const qreal r = track.height() / 2;
+	QColor on(t.primary), off = palette().text().color();
+	off.setAlpha(t.dark ? 60 : 50);
+	if (!isEnabled()) {
+		on.setAlpha(110);
+		off.setAlpha(30);
+	}
+	p.setPen(Qt::NoPen);
+	p.setBrush(isChecked() ? on : off);
+	p.drawRoundedRect(track, r, r);
+	if (hasFocus()) {
+		QColor ring(t.brand);
+		ring.setAlpha(210);
+		p.setPen(QPen(ring, 2));
+		p.setBrush(Qt::NoBrush);
+		p.drawRoundedRect(track.adjusted(-0.5, -0.5, 0.5, 0.5), r, r);
+		p.setPen(Qt::NoPen);
+	}
+	const qreal d = track.height() - 4;
+	const qreal x = isChecked() ? track.right() - 2 - d : track.left() + 2;
+	p.setBrush(isEnabled() ? QColor(Qt::white) : QColor(255, 255, 255, 150));
+	p.drawEllipse(QRectF(x, track.top() + 2, d, d));
+}
+
+Card::Card(QWidget *parent) : QFrame(parent)
+{
+	setProperty("role", "card");
+	rows = new QVBoxLayout(this);
+	rows->setContentsMargins(14, 4, 14, 4);
+	rows->setSpacing(0);
+}
+
+void Card::addRow(QWidget *row)
+{
+	auto *h = new QHBoxLayout;
+	h->setContentsMargins(0, 0, 0, 0);
+	h->addWidget(row);
+	addLayoutRow(h);
+}
+
+void Card::addLayoutRow(QLayout *row)
+{
+	if (count++ > 0)
+		rows->addWidget(rule());
+	auto *pad = new QVBoxLayout;
+	pad->setContentsMargins(0, 10, 0, 10);
+	pad->addLayout(row);
+	rows->addLayout(pad);
+}
+
+QWidget *settingRow(const QString &name, const QString &note, QWidget *control)
+{
+	auto *w = new QWidget;
+	auto *h = new QHBoxLayout(w);
+	h->setContentsMargins(0, 0, 0, 0);
+	h->setSpacing(12);
+	auto *texts = new QVBoxLayout;
+	texts->setSpacing(2);
+	auto *title = new QLabel(name);
+	title->setWordWrap(true);
+	texts->addWidget(title);
+	if (!note.isEmpty())
+		texts->addWidget(muted(note));
+	h->addLayout(texts, 1);
+	if (control)
+		h->addWidget(control, 0, Qt::AlignVCenter);
+	return w;
 }
 
 void ReloadingCombo::showPopup()

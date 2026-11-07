@@ -12,7 +12,6 @@
 #include <obs-module.h>
 #include <plugin-support.h>
 
-#include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
 #include <QDateTime>
@@ -259,8 +258,11 @@ QWidget *Dock::pageHeader(QLabel **titleLabel, QLabel **subtitleLabel)
 	auto *v = new QVBoxLayout(w);
 	v->setContentsMargins(0, 0, 0, 0);
 	v->setSpacing(6);
-	auto *back = ui::linkButton(tr("‹  Back"), nullptr, "muted");
+	auto *back = ui::linkButton(tr("‹  Back"));
 	back->setToolTip(tr("Back (Esc)"));
+	QFont bf = back->font();
+	bf.setWeight(QFont::DemiBold);
+	back->setFont(bf);
 	connect(back, &QToolButton::clicked, this, &Dock::goBack);
 	v->addWidget(back, 0, Qt::AlignLeft);
 	*titleLabel = ui::title(QString());
@@ -679,9 +681,22 @@ QWidget *Dock::buildSettings()
 	auto *content = new QWidget;
 	auto *v = new QVBoxLayout(content);
 	v->setContentsMargins(0, 0, 4, 0);
-	v->setSpacing(0);
+	v->setSpacing(GAP_LABEL);
+	// A section: its title above a card.
+	auto section = [v](const QString &title, bool first = false) {
+		if (!first)
+			v->addSpacing(GAP_SECTION - GAP_LABEL);
+		v->addWidget(ui::eyebrow(title));
+		auto *card = new ui::Card;
+		v->addWidget(card);
+		return card;
+	};
 
 	// Transcription.
+	auto *tx = section(tr("Transcription"), true);
+	auto *nameBlock = new QVBoxLayout;
+	nameBlock->setSpacing(GAP_LABEL);
+	nameBlock->addWidget(new QLabel(tr("Name")));
 	nameEdit = new QLineEdit;
 	nameEdit->setPlaceholderText(tr("OBS on %1").arg(host_name()));
 	nameEdit->setText(settings.transcriptionName);
@@ -689,20 +704,22 @@ QWidget *Dock::buildSettings()
 		settings.transcriptionName = nameEdit->text().trimmed().left(200);
 		settings.save();
 	});
-	ui::field(v, tr("Transcription name"), nameEdit,
-		  ui::muted(tr("Optional. What the transcription is called in VocalStack.")));
-	v->addSpacing(GAP_FIELD);
-	lockBox = new QCheckBox(tr("Lock against deletion"));
+	nameBlock->addWidget(nameEdit);
+	nameBlock->addWidget(ui::muted(tr("Optional. What the transcription is called in VocalStack.")));
+	tx->addLayoutRow(nameBlock);
+	lockBox = new ui::Switch;
 	lockBox->setChecked(settings.locked);
-	connect(lockBox, &QCheckBox::toggled, this, [this](bool on) {
+	connect(lockBox, &ui::Switch::toggled, this, [this](bool on) {
 		settings.locked = on;
 		settings.save();
 	});
-	v->addWidget(lockBox);
-	v->addSpacing(GAP_LABEL);
-	v->addWidget(ui::muted(tr("The transcription can't be deleted from the dashboard until it is unlocked.")));
-	v->addSpacing(GAP_SECTION);
+	tx->addRow(ui::settingRow(tr("Lock against deletion"),
+				  tr("It can't be deleted from the dashboard until unlocked."), lockBox));
 
+	// Speaker labels.
+	auto *sp = section(tr("Speaker labels"));
+	auto *spBlock = new QVBoxLayout;
+	spBlock->setSpacing(6);
 	speakersSwitch = new ui::Segmented;
 	speakersSwitch->addOption(tr("When needed"), "auto");
 	speakersSwitch->addOption(tr("On"), "on");
@@ -712,28 +729,32 @@ QWidget *Dock::buildSettings()
 		settings.speakerLabels = value.toString();
 		settings.save();
 	});
-	ui::field(v, tr("Speaker labels"), speakersSwitch,
-		  ui::muted(tr("Follows the broadcast's default; a change here lasts until you choose another broadcast.")));
-	v->addSpacing(GAP_SECTION);
+	spBlock->addWidget(speakersSwitch);
+	spBlock->addWidget(ui::muted(tr("Follows the broadcast's default until you change it here.")));
+	sp->addLayoutRow(spBlock);
 
-	followBox = new QCheckBox(tr("Follow OBS"));
+	// Behaviour.
+	auto *be = section(tr("Behaviour"));
+	followBox = new ui::Switch;
 	followBox->setChecked(settings.followObs);
-	connect(followBox, &QCheckBox::toggled, this, [this](bool on) {
+	connect(followBox, &ui::Switch::toggled, this, [this](bool on) {
 		settings.followObs = on;
 		settings.save();
 		updateFollowHint();
 	});
-	ui::field(v, tr("Start and stop"), followBox, ui::muted(tr("Starts and stops with streaming or recording.")));
-	v->addSpacing(GAP_SECTION);
+	be->addRow(ui::settingRow(tr("Follow OBS"), tr("Start and stop with streaming or recording."), followBox));
+	autoUpdateBox = new ui::Switch;
+	autoUpdateBox->setChecked(settings.autoUpdate);
+	connect(autoUpdateBox, &ui::Switch::toggled, this, [this](bool on) {
+		settings.autoUpdate = on;
+		settings.save();
+		showUpdate();
+	});
+	be->addRow(ui::settingRow(tr("Update automatically"), tr("Installs while idle; restart OBS to use it."),
+				  autoUpdateBox));
 
-	// Updates.
-	auto *uv = new QVBoxLayout;
-	uv->setSpacing(GAP_LABEL);
-	uv->addWidget(ui::eyebrow(tr("Updates")));
-	uv->addWidget(ui::muted(tr("Version %1").arg(PLUGIN_VERSION)));
-	uv->addSpacing(GAP_LABEL);
-	auto *checkRow = new QHBoxLayout;
-	checkRow->setSpacing(8);
+	// Version.
+	auto *ab = section(tr("About"));
 	checkUpdatesButton = new QPushButton(tr("Check for updates"));
 	checkUpdatesButton->setProperty("role", "secondary");
 	connect(checkUpdatesButton, &QPushButton::clicked, this, [this]() {
@@ -744,39 +765,24 @@ QWidget *Dock::buildSettings()
 		if (updater->step() != Updater::Step::Checking)
 			showUpdate(); // busy downloading or installing: say so now
 	});
+	auto *aboutRow = ui::settingRow(tr("VocalStack for OBS %1").arg(PLUGIN_VERSION), QString(), checkUpdatesButton);
 	checkUpdatesResult = ui::muted();
-	checkRow->addWidget(checkUpdatesButton, 0, Qt::AlignTop);
-	checkRow->addWidget(checkUpdatesResult, 1);
-	uv->addLayout(checkRow);
-	uv->addSpacing(8);
-	autoUpdateBox = new QCheckBox(tr("Update automatically"));
-	autoUpdateBox->setChecked(settings.autoUpdate);
-	connect(autoUpdateBox, &QCheckBox::toggled, this, [this](bool on) {
-		settings.autoUpdate = on;
-		settings.save();
-		showUpdate();
-	});
-	uv->addWidget(autoUpdateBox);
-	uv->addWidget(ui::muted(tr("Installs while nothing is being transcribed; restart OBS to use it.")));
-	v->addLayout(uv);
-	v->addSpacing(GAP_SECTION);
+	static_cast<QVBoxLayout *>(static_cast<QHBoxLayout *>(aboutRow->layout())->itemAt(0)->layout())
+		->addWidget(checkUpdatesResult);
+	ab->addRow(aboutRow);
 
 	// Account.
-	auto *av = new QVBoxLayout;
-	av->setSpacing(GAP_LABEL);
-	av->addWidget(ui::eyebrow(tr("Account")));
-	settingsAccount = new QLabel;
-	settingsAccount->setWordWrap(true);
-	av->addWidget(settingsAccount);
-	av->addSpacing(GAP_LABEL);
+	auto *ac = section(tr("Account"));
 	signOutButton = new QPushButton(tr("Sign out"));
 	signOutButton->setProperty("role", "secondary");
 	connect(signOutButton, &QPushButton::clicked, this, [this]() { signOut(QString()); });
-	av->addWidget(signOutButton, 0, Qt::AlignLeft);
+	auto *accountRow = ui::settingRow(QString(), QString(), signOutButton);
+	auto *accountTexts = static_cast<QVBoxLayout *>(static_cast<QHBoxLayout *>(accountRow->layout())->itemAt(0)->layout());
+	settingsAccount = static_cast<QLabel *>(accountTexts->itemAt(0)->widget());
 	signOutNote = ui::muted(tr("Stop transcribing to sign out."));
 	signOutNote->hide();
-	av->addWidget(signOutNote);
-	v->addLayout(av);
+	accountTexts->addWidget(signOutNote);
+	ac->addRow(accountRow);
 	v->addStretch(1);
 
 	outer->addWidget(scrolling(content), 1);
