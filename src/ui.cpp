@@ -79,7 +79,7 @@ QPushButton[role="secondary"] { min-height: 32px; padding: 0 12px; }
 QToolButton[role="link"] { color: BRAND; background: transparent; border: none; padding: 2px 4px; }
 QToolButton[role="link"]:hover { color: PRIMARYHOVER; }
 QToolButton[role="link"]:disabled { color: MUTED; }
-QToolButton[role="icon"] { min-width: 32px; min-height: 32px; border-radius: 6px; }
+QToolButton[role="edit"] { padding: 0 12px; }
 QToolButton[role="close"] { color: MUTED; background: transparent; border: none; padding: 0 2px; }
 QToolButton[role="close"]:hover { color: BRAND; }
 
@@ -93,7 +93,7 @@ QFrame[role="segmented"] QPushButton {
 	border: none; border-radius: 13px; padding: 5px 12px; background: transparent; min-height: 20px;
 }
 QFrame[role="segmented"] QPushButton:hover { background: rgba(FGRGB,13); }
-QFrame[role="segmented"] QPushButton:checked { background: BRAND; color: CHECKEDTEXT; font-weight: 600; }
+QFrame[role="segmented"] QPushButton:checked { background: CHECKEDBG; color: #ffffff; font-weight: 600; }
 QFrame[role="segmented"] QPushButton:disabled { color: MUTED; }
 QFrame[role="segmented"] QPushButton:checked:disabled { background: rgba(BRANDRGB,82); }
 
@@ -103,7 +103,7 @@ QScrollArea[role="page"], QScrollArea[role="page"] > QWidget > QWidget { backgro
 	s.replace("PRIMARYHOVER", primaryHover)
 		.replace("PRIMARYTEXT", primaryText)
 		.replace("PRIMARY", primary)
-		.replace("CHECKEDTEXT", dark ? "#131326" : "#ffffff")
+		.replace("CHECKEDBG", dark ? "#3382cc" : "#2968a3")
 		.replace("BRANDRGB", brandRgb)
 		.replace("BRAND", brand)
 		.replace("MUTED", muted)
@@ -217,6 +217,9 @@ void Segmented::addOption(const QString &label, const QVariant &value)
 	b->setCheckable(true);
 	b->setCursor(Qt::PointingHandCursor);
 	b->setProperty("value", value);
+	QFont bold = b->font();
+	bold.setWeight(QFont::DemiBold);
+	b->setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 2 * 12 + 6);
 	group->addButton(b);
 	layout()->addWidget(b);
 	if (group->buttons().size() == 1)
@@ -295,7 +298,7 @@ void Callout::addAction(QWidget *w)
 
 ElidedLabel::ElidedLabel(QWidget *parent) : QLabel(parent)
 {
-	setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+	setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 	setTextInteractionFlags(Qt::TextSelectableByMouse);
 }
 
@@ -303,7 +306,13 @@ void ElidedLabel::setFullText(const QString &text)
 {
 	full = text;
 	setToolTip(text);
+	updateGeometry();
 	refit();
+}
+
+QSize ElidedLabel::sizeHint() const
+{
+	return QSize(fontMetrics().horizontalAdvance(full) + 4, QLabel::minimumSizeHint().height());
 }
 
 QSize ElidedLabel::minimumSizeHint() const

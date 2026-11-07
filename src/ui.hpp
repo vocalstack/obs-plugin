@@ -97,6 +97,7 @@ public:
 	explicit ElidedLabel(QWidget *parent = nullptr);
 	void setFullText(const QString &text);
 	QString fullText() const { return full; }
+	QSize sizeHint() const override;
 	QSize minimumSizeHint() const override;
 
 protected:

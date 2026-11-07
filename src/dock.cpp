@@ -378,9 +378,11 @@ QWidget *Dock::buildSignedIn()
 		updateLinks();
 	});
 	editBroadcastButton = new QToolButton;
-	editBroadcastButton->setText(QStringLiteral("✎"));
-	editBroadcastButton->setToolTip(tr("Edit broadcast"));
-	editBroadcastButton->setProperty("role", "icon");
+	editBroadcastButton->setText(tr("Edit"));
+	editBroadcastButton->setToolTip(tr("Edit this broadcast: name, link, visibility, language, speaker labels"));
+	editBroadcastButton->setProperty("role", "edit");
+	// As tall as the list beside it, whatever OBS's theme makes that.
+	editBroadcastButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 	connect(editBroadcastButton, &QToolButton::clicked, this,
 		[this]() { openBroadcastEditor(settings.broadcastId); });
 	row->addWidget(broadcastBox, 1);
@@ -393,8 +395,9 @@ QWidget *Dock::buildSignedIn()
 	copyBroadcastButton = ui::linkButton(tr("Copy"));
 	copyBroadcastButton->setToolTip(tr("Copy the broadcast's link, for listeners"));
 	connect(copyBroadcastButton, &QToolButton::clicked, this, &Dock::copyBroadcastLink);
-	linkRow->addWidget(broadcastLink, 1);
+	linkRow->addWidget(broadcastLink);
 	linkRow->addWidget(copyBroadcastButton);
+	linkRow->addStretch(1);
 	bv->addLayout(linkRow);
 	v->addLayout(bv);
 	v->addSpacing(GAP_FIELD);
@@ -438,7 +441,7 @@ QWidget *Dock::buildSignedIn()
 	followHint = ui::muted();
 	followHint->setTextFormat(Qt::RichText);
 	connect(followHint, &QLabel::linkActivated, this, [this]() { pages->setCurrentIndex(SettingsPage); });
-	v->addSpacing(6);
+	v->addSpacing(14);
 	v->addWidget(followHint);
 
 	// After a session: how it ended.
