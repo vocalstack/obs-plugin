@@ -147,6 +147,7 @@ Dock::Dock(QWidget *parent)
 
 	api->setKey(settings.apiKey);
 	showSignedIn(!settings.apiKey.isEmpty());
+	onState(session->state()); // the Start button's colour from the first paint
 }
 
 void Dock::showEvent(QShowEvent *event)
@@ -274,9 +275,10 @@ QWidget *Dock::buildSignedIn()
 	v->addLayout(form);
 
 	startButton = new QPushButton(tr("Start transcribing"));
-	startButton->setMinimumHeight(32);
+	startButton->setMinimumHeight(36);
 	connect(startButton, &QPushButton::clicked, this, &Dock::toggle);
-	v->addWidget(startButton);
+	// In the fields' column, lined up with them.
+	form->addRow(QString(), startButton);
 
 	// Says the button need not be pressed when OBS will start it.
 	followHint = new QLabel(tr("Starts when you start streaming or recording in OBS."));
@@ -1023,6 +1025,13 @@ void Dock::onState(Session::State s)
 				  : s == Session::State::Stopping ? tr("Stopping…")
 								  : tr("Stop transcribing"));
 	startButton->setEnabled(s != Session::State::Stopping);
+	// VocalStack blue to start, red to stop.
+	startButton->setStyleSheet(
+		QStringLiteral("QPushButton { background: %1; color: white; border: none; border-radius: 6px; "
+			       "font-weight: bold; padding: 6px 12px; }"
+			       "QPushButton:hover { background: %2; }"
+			       "QPushButton:disabled { background: #4a4f5c; color: #a0a4ad; }")
+			.arg(idle ? "#3b8fd9" : "#d64545", idle ? "#4a9ee8" : "#e35656"));
 	updateFollowHint();
 	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, spokenBox, sendBox, speakersBox, lockBox, nameEdit,
 							  addBroadcastButton})
