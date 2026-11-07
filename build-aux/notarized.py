@@ -23,7 +23,23 @@ hist = json.loads(subprocess.run(
     ["xcrun", "notarytool", "history", "--keychain-profile", "vocalstack-notary", "--output-format", "json"],
     check=True, capture_output=True, text=True).stdout)["history"]
 mine = [h for h in hist if h["name"].lower().startswith(prefix)]
+
+
+def building():
+    """A release run (a version tag) still going in CI, and the step it is on."""
+    runs = json.loads(subprocess.run(
+        ["gh", "run", "list", "-R", repo, "--limit", "10", "--json", "databaseId,headBranch,status,event"],
+        capture_output=True, text=True).stdout or "[]")
+    for r in runs:
+        if r["status"] != "completed" and r["event"] == "push" and r["headBranch"] not in ("main", "master"):
+            jobs = json.loads(subprocess.run(
+                ["gh", "run", "view", str(r["databaseId"]), "-R", repo, "--json", "jobs"],
+                capture_output=True, text=True).stdout or "{}").get("jobs", [])
+            steps = [s["name"] for j in jobs if "mac" in j["name"].lower() for s in j["steps"] if s["status"] == "in_progress"]
+            print(f"building  {r['headBranch']}  in CI, not sent to Apple yet" + (f" (now: {steps[0]})" if steps else ""))
+
 if not mine:
+    building()
     sys.exit(print("no notarization yet"))
 rels = json.loads(subprocess.run(
     ["gh", "release", "list", "-R", repo, "--limit", "50", "--json", "tagName,publishedAt"],
@@ -44,4 +60,5 @@ refused = [h for h in mine if h["status"] not in ("Accepted", "In Progress") and
 for label, h in [("pending", h) for h in pending] + [(h["status"].lower(), h) for h in refused] + ([("accepted", accepted)] if accepted else []):
     print("  ".join([label.ljust(8), version(h).ljust(6), h["name"], when(h["createdDate"]), h["id"]]))
 if not pending:
+    building()
     print("nothing waiting on Apple")
