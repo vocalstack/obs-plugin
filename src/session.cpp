@@ -7,26 +7,36 @@
 #include <QHostInfo>
 #include <QJsonArray>
 #include <QUrlQuery>
+#include <QUuid>
 
 // A caption stays this long after the last words.
 static const int CAPTION_HOLD_MS = 8000;
-// A caption feed that closed is opened again after 3 s, then 6, 12… up
-// to a minute while it keeps closing; at once when the server closed it to
+// A feed that closed is opened again after 3 s, then 6, 12… up to a
+// minute while it keeps closing; at once when the server closed it to
 // restart (1012: a relay draining for a deploy), where the same
 // subscription goes on.
 static const int RESUBSCRIBE_MS = 3000;
 static const int RESUBSCRIBE_MAX_MS = 60000;
 static const int CLOSE_RESTART = 1012;
+// The server refused what the socket asked (a caption language past the
+// recording's limit of languages).
+static const int CLOSE_POLICY = 1008;
 
 Session::Session(Api *api_, Settings *settings_, QObject *parent)
 	: QObject(parent),
 	  api(api_),
 	  settings(settings_),
-	  resubscribeMs(RESUBSCRIBE_MS)
+	  resubscribeMs(RESUBSCRIBE_MS),
+	  reopenEventsMs(RESUBSCRIBE_MS)
 {
 	connect(&output, &VocalStackOutput::started, this, [this]() {
 		if (st == State::Starting)
-			ensureTranscription([this]() { attachBroadcast([this]() { startRecording(false); }); });
+			refreshLimits([this]() {
+				ensureTranscription([this]() {
+					applyTranscriptionSettings(
+						[this]() { attachBroadcast([this]() { startRecording(false); }); });
+				});
+			});
 	});
 	connect(&output, &VocalStackOutput::reconnecting, this,
 		[this]() { emit status(tr("Reconnecting to VocalStack…"), true); });
@@ -49,28 +59,65 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 	connect(&feed, &WebSocket::textMessage, this, &Session::onFrame);
 	connect(&feed, &WebSocket::opened, this, [this]() { resubscribeMs = RESUBSCRIBE_MS; });
 	connect(&feed, &WebSocket::closed, this, [this](const QString &reason, int code) {
-		if (st == State::Live && !reason.isEmpty()) {
-			obs_log(LOG_WARNING, "caption feed closed: %s", reason.toUtf8().constData());
-			if (code == CLOSE_RESTART) {
-				resubscribe.start(0);
-				return;
-			}
-			resubscribe.start(resubscribeMs);
-			resubscribeMs = qMin(resubscribeMs * 2, RESUBSCRIBE_MAX_MS);
+		if (st != State::Live || reason.isEmpty())
+			return;
+		obs_log(LOG_WARNING, "caption feed closed (%d): %s", code, reason.toUtf8().constData());
+		if (code == CLOSE_RESTART) {
+			resubscribe.start(0);
+			return;
 		}
+		if (code == CLOSE_POLICY && !settings->captionLanguage.isEmpty()) {
+			// The caption language was refused (the recording has all the
+			// languages it may): captions as spoken instead, at once.
+			settings->captionLanguage.clear();
+			settings->save();
+			emit captionLanguageRefused(reason);
+			resubscribe.start(0);
+			return;
+		}
+		resubscribe.start(resubscribeMs);
+		resubscribeMs = qMin(resubscribeMs * 2, RESUBSCRIBE_MAX_MS);
 	});
 	resubscribe.setSingleShot(true);
 	connect(&resubscribe, &QTimer::timeout, this, [this]() {
-		if (st == State::Live)
+		if (st == State::Live && settings->showCaptions)
 			subscribe();
+	});
+
+	connect(&events, &WebSocket::textMessage, this, &Session::onEvent);
+	connect(&events, &WebSocket::opened, this, [this]() {
+		reopenEventsMs = RESUBSCRIBE_MS;
+		ingestPoll.stop(); // the feed says it now
+	});
+	connect(&events, &WebSocket::closed, this, [this](const QString &reason, int code) {
+		if (st != State::Live || reason.isEmpty())
+			return;
+		obs_log(LOG_WARNING, "event feed closed (%d): %s", code, reason.toUtf8().constData());
+		ingestPoll.start(); // until it is back
+		if (code == CLOSE_RESTART) {
+			reopenEvents.start(0);
+			return;
+		}
+		reopenEvents.start(reopenEventsMs);
+		reopenEventsMs = qMin(reopenEventsMs * 2, RESUBSCRIBE_MAX_MS);
+	});
+	reopenEvents.setSingleShot(true);
+	connect(&reopenEvents, &QTimer::timeout, this, [this]() {
+		if (st == State::Live)
+			openEvents();
 	});
 
 	captionClear.setSingleShot(true);
 	captionClear.setInterval(CAPTION_HOLD_MS);
 	connect(&captionClear, &QTimer::timeout, this, &Session::clearCaption);
 
+	// Whether VocalStack hears the stream, while the event feed is not
+	// there to say so.
 	ingestPoll.setInterval(5000);
 	connect(&ingestPoll, &QTimer::timeout, this, &Session::pollIngest);
+
+	broadcastPoll.setInterval(15000);
+	connect(&broadcastPoll, &QTimer::timeout, this, &Session::pollBroadcast);
 }
 
 void Session::setState(State s)
@@ -129,18 +176,43 @@ void Session::ensureStreamKey(Next next)
 	});
 }
 
+// The plan's longest live recording: a recording ends there, so the
+// transcription asks for all of it (VocalStack's own default is 2 hours).
+void Session::refreshLimits(std::function<void()> then)
+{
+	api->get("/v1/realtime/capabilities", [this, then](int, const QJsonDocument &doc, const QString &error) {
+		if (error.isEmpty()) {
+			const QJsonValue v = doc.object().value("limits").toObject().value("recordingMaxDurationS");
+			const int s = v.isDouble() ? int(v.toDouble()) : 0;
+			if (s > 0 && s != settings->maxDurationS) {
+				settings->maxDurationS = s;
+				settings->save();
+				emit limitsChanged();
+			}
+		}
+		if (then)
+			then();
+	});
+}
+
 void Session::ensureTranscription(Next next)
 {
 	if (settings->transcriptionId.isEmpty()) {
 		createTranscription(next);
 		return;
 	}
-	// Still there? It may have been deleted in the dashboard.
+	// Still there? It may have been deleted in the dashboard, or
+	// disabled by VocalStack: a new one then.
 	api->get("/v1/transcriptions/" + settings->transcriptionId,
-		 [this, next](int status, const QJsonDocument &, const QString &error) {
+		 [this, next](int status, const QJsonDocument &doc, const QString &error) {
 			 if (st != State::Starting)
 				 return;
-			 if (status == 404) {
+			 const bool blocked = status == 403 && Api::errorDetails(doc).value("blocked").toBool();
+			 if (status == 404 || blocked) {
+				 if (blocked)
+					 obs_log(LOG_WARNING, "VocalStack disabled transcription %s: %s",
+						 settings->transcriptionId.toUtf8().constData(),
+						 error.toUtf8().constData());
 				 settings->transcriptionId.clear();
 				 settings->attachedBroadcastId.clear();
 				 createTranscription(next);
@@ -152,16 +224,54 @@ void Session::ensureTranscription(Next next)
 		 });
 }
 
+static QString default_name()
+{
+	return QStringLiteral("OBS on %1").arg(QHostInfo::localHostName());
+}
+
+// VocalStack's capture settings for the transcription, from the dock.
+QJsonObject Session::recordingSettings() const
+{
+	QJsonObject s{
+		{"spokenLanguage", settings->spokenLanguage.isEmpty() ? QJsonValue() : QJsonValue(settings->spokenLanguage)},
+		{"speakerLabels", settings->speakerLabels.isEmpty() ? "auto" : settings->speakerLabels},
+		{"latencyMode", settings->latencyMode.isEmpty() ? "auto" : settings->latencyMode},
+		{"summary", settings->aiSummary},
+		{"title", settings->aiSummary},
+	};
+	if (settings->maxDurationS > 0)
+		s.insert("maxDurationS", settings->maxDurationS);
+	return s;
+}
+
+// VocalStack would not take the recording length asked for (the plan's
+// limit it gave before has changed): once more without it. True when so.
+bool Session::dropLimit(const QJsonDocument &doc)
+{
+	if (settings->maxDurationS <= 0 || Api::errorCode(doc) != "invalid_options")
+		return false;
+	obs_log(LOG_WARNING, "VocalStack refused maxDurationS %d: asking without it", settings->maxDurationS);
+	settings->maxDurationS = 0;
+	settings->save();
+	emit limitsChanged();
+	return true;
+}
+
 void Session::createTranscription(Next next)
 {
 	QJsonObject body{
-		{"name", QStringLiteral("OBS on %1").arg(QHostInfo::localHostName())},
+		{"name", settings->transcriptionName.isEmpty() ? default_name() : settings->transcriptionName},
 		{"source", QJsonObject{{"kind", "stream"}, {"url", settings->serverUrl}}},
+		{"settings", recordingSettings()},
 	};
 	api->post("/v1/transcriptions/live", body, [this, next](int, const QJsonDocument &doc, const QString &error) {
 		if (st != State::Starting)
 			return;
 		if (!error.isEmpty()) {
+			if (dropLimit(doc)) {
+				createTranscription(next);
+				return;
+			}
 			failStart(tr("Could not create the live transcription: %1").arg(error));
 			return;
 		}
@@ -170,6 +280,31 @@ void Session::createTranscription(Next next)
 		settings->save();
 		next();
 	});
+}
+
+// The dock's name, lock and recording settings, written to the
+// transcription each Start: what it was made with may have changed since.
+void Session::applyTranscriptionSettings(Next next)
+{
+	QJsonObject body{
+		{"name", settings->transcriptionName.isEmpty() ? default_name() : settings->transcriptionName},
+		{"locked", settings->locked},
+		{"settings", recordingSettings()},
+	};
+	api->patch("/v1/transcriptions/" + settings->transcriptionId, body,
+		   [this, next](int, const QJsonDocument &doc, const QString &error) {
+			   if (st != State::Starting)
+				   return;
+			   if (!error.isEmpty()) {
+				   if (dropLimit(doc)) {
+					   applyTranscriptionSettings(next);
+					   return;
+				   }
+				   failStart(tr("Could not set up the transcription: %1").arg(error));
+				   return;
+			   }
+			   next();
+		   });
 }
 
 // The chosen broadcast in, the one before it out.
@@ -208,38 +343,55 @@ void Session::attachBroadcast(Next next)
 	api->del(base + had, [attach](int, const QJsonDocument &, const QString &) { attach(); });
 }
 
+// Why a recording could not start, for the dock: the plan's credit or
+// caps link to the app's billing page.
+static QString start_error(const QString &appBase, const QString &code, const QString &message)
+{
+	if (code == "insufficient_credit" || code == "usage_cap_reached" || code == "quota_exceeded")
+		return QStringLiteral("%1 <a href=\"%2/billing\">%3</a>")
+			.arg(message.toHtmlEscaped(), appBase, QObject::tr("Open billing"));
+	return QObject::tr("Could not start recording: %1").arg(message);
+}
+
 void Session::startRecording(bool takeover)
 {
-	QJsonObject recordingSettings;
-	if (!settings->spokenLanguage.isEmpty())
-		recordingSettings.insert("spokenLanguage", settings->spokenLanguage);
 	QJsonObject body;
-	if (!recordingSettings.isEmpty())
-		body.insert("settings", recordingSettings);
 	if (takeover)
 		body.insert("takeover", true);
-	api->post("/v1/transcriptions/" + settings->transcriptionId + "/recordings", body,
+	// A start sent again after a timeout is answered as the first was,
+	// not recorded twice.
+	const QString key = QUuid::createUuid().toString(QUuid::WithoutBraces);
+	api->post("/v1/transcriptions/" + settings->transcriptionId + "/recordings", body, key,
 		  [this, takeover](int code, const QJsonDocument &doc, const QString &error) {
 			  if (st != State::Starting)
 				  return;
-			  if (code == 409 && !takeover) {
+			  if (code == 409 && !takeover && Api::errorCode(doc) == "conflict") {
 				  // Another device holds this transcription: OBS takes it.
 				  startRecording(true);
 				  return;
 			  }
 			  if (!error.isEmpty()) {
-				  failStart(tr("Could not start recording: %1").arg(error));
+				  failStart(start_error(api->appBase(), Api::errorCode(doc), error));
 				  return;
 			  }
 			  recordingId = doc.object().value("recording").toObject().value("id").toString();
 			  lastSeq = -1;
+			  readyCursor = -1;
 			  sentences = false;
-			  resubscribeMs = RESUBSCRIBE_MS;
+			  resuming = false;
+			  speakers.clear();
+			  shownSpeaker = -1;
+			  resubscribeMs = reopenEventsMs = RESUBSCRIBE_MS;
 			  setState(State::Live);
 			  emit status(tr("Live: VocalStack is transcribing"), false);
 			  ingestPoll.start();
+			  openEvents();
 			  if (settings->showCaptions)
 				  subscribe();
+			  if (!settings->broadcastId.isEmpty()) {
+				  broadcastPoll.start();
+				  pollBroadcast();
+			  }
 		  });
 }
 
@@ -256,11 +408,15 @@ void Session::end(const QString &error)
 	const bool wasLive = st == State::Live;
 	setState(State::Stopping);
 	ingestPoll.stop();
+	broadcastPoll.stop();
 	resubscribe.stop();
+	reopenEvents.stop();
 	feed.close();
+	events.close();
 	captionClear.stop();
 	clearCaption();
 	output.stop();
+	emit listeners(-1);
 
 	auto done = [this, error]() {
 		recordingId.clear();
@@ -296,8 +452,21 @@ void Session::subscribe()
 		q.addQueryItem("lang", settings->captionLanguage);
 		url.setQuery(q);
 	}
+	readyCursor = -1;
 	feed.open(url, {{"Authorization", "Bearer " + api->key().toUtf8()},
 			{"User-Agent", QByteArray("vocalstack-obs/") + PLUGIN_VERSION}});
+}
+
+// The transcription's event feed: where the stream's audio stands
+// (stream.ingest), the recording ending (recording.ended).
+void Session::openEvents()
+{
+	if (settings->transcriptionId.isEmpty())
+		return;
+	QUrl url(api->apiBase() + "/v1/transcriptions/" + settings->transcriptionId + "/events");
+	url.setScheme(url.scheme() == "http" ? "ws" : "wss");
+	events.open(url, {{"Authorization", "Bearer " + api->key().toUtf8()},
+			  {"User-Agent", QByteArray("vocalstack-obs/") + PLUGIN_VERSION}});
 }
 
 void Session::setCaptionLanguage(const QString &lang)
@@ -331,33 +500,70 @@ static QList<qint64> seqsOf(const QJsonValue &v)
 	return seqs;
 }
 
+static int speakerOf(const QJsonObject &row)
+{
+	return row.value("speaker").isDouble() ? row.value("speaker").toInt() : -1;
+}
+
+// "Name" or "Speaker 2", from VocalStack's numbering; empty until more
+// than one speaker has been heard (one speaker needs no label).
+QString Session::speakerLabel(int speaker) const
+{
+	if (speaker < 0 || speakers.size() < 2 || !speakers.contains(speaker))
+		return QString();
+	const Speaker &s = speakers.value(speaker);
+	return s.name.isEmpty() ? tr("Speaker %1").arg(s.number) : s.name;
+}
+
 void Session::onFrame(const QString &text)
 {
 	const QJsonObject f = QJsonDocument::fromJson(text.toUtf8()).object();
 	const QString type = f.value("type").toString();
 	const QString lang = settings->captionLanguage;
-	if (type == "transcript.committed") {
+	// A feed opened again replays what was sent before its cursor.
+	if (f.value("cursor").isDouble() && f.value("cursor").toInteger() <= readyCursor)
+		return;
+	if (type == "subscribe.ready") {
+		readyCursor = f.value("lastSeq").toInteger(-1);
+		const QString s = f.value("state").toString();
+		if (st == State::Live && (s == "ended" || s == "finalized")) {
+			recordingId.clear();
+			end(tr("VocalStack ended the recording"));
+		}
+	} else if (type == "transcript.committed") {
 		const QJsonObject seg = f.value("segment").toObject();
 		lastSeq = seg.value("seq").toInteger(lastSeq);
 		// Waiting for the translation keeps the original off the screen.
 		if (!sentences && (lang.isEmpty() || seg.value("translations").toObject().contains(lang)))
-			showCaption(shown(seg, lang), {lastSeq});
+			showCaption(shown(seg, lang), {lastSeq}, speakerOf(seg));
 	} else if (type == "transcript.translated" && !lang.isEmpty()) {
 		const qint64 seq = f.value("seq").toInteger(-1);
 		if (!sentences && seq == lastSeq)
-			showCaption(f.value("translations").toObject().value(lang).toString(), {seq});
+			showCaption(f.value("translations").toObject().value(lang).toString(), {seq}, shownSpeaker);
 	} else if (type == "transcript.sentence") {
 		// Sent again as the sentence grows and when its translation comes.
 		sentences = true;
 		const QJsonObject sentence = f.value("sentence").toObject();
+		if (sentence.value("status").toString() == "dropped")
+			return;
 		if (lang.isEmpty() || sentence.value("translations").toObject().contains(lang))
-			showCaption(shown(sentence, lang), seqsOf(sentence.value("seqs")));
+			showCaption(shown(sentence, lang), seqsOf(sentence.value("seqs")), speakerOf(sentence));
 	} else if (type == "transcript.amended") {
 		// The row on screen, written again. A translated caption waits for
 		// the amend's own translation (transcript.translated, same seq).
 		const qint64 seq = f.value("seq").toInteger(-1);
 		if (lang.isEmpty() && shownSeqs == QList<qint64>{seq})
-			showCaption(f.value("text").toString(), {seq});
+			showCaption(f.value("text").toString(), {seq},
+				    f.value("speaker").isDouble() ? f.value("speaker").toInt() : shownSpeaker);
+	} else if (type == "transcript.corrected") {
+		// Somebody corrected the row on screen in the dashboard.
+		const qint64 seq = f.value("seq").toInteger(-1);
+		if (lang.isEmpty() && shownSeqs.contains(seq)) {
+			const QString sentenceText = f.value("sentenceText").toString();
+			showCaption(shownSeqs.size() > 1 && !sentenceText.isEmpty() ? sentenceText
+										   : f.value("text").toString(),
+				    shownSeqs, shownSpeaker);
+		}
 	} else if (type == "transcript.retracted") {
 		// Rows taken back (another language than the engine read); the
 		// engine that reads it sends them again.
@@ -377,6 +583,18 @@ void Session::onFrame(const QString &text)
 			captionClear.stop();
 			clearCaption();
 		}
+	} else if (type == "transcript.speakerNumbers") {
+		// Every speaker's number and name, in full.
+		speakers.clear();
+		for (const QJsonValue v : f.value("speakers").toArray()) {
+			const QJsonObject s = v.toObject();
+			speakers.insert(s.value("speaker").toInt(),
+					{s.value("number").toInt(), s.value("name").toString()});
+		}
+	} else if (type == "transcript.speakerNamed") {
+		const int speaker = f.value("speaker").toInt();
+		if (speakers.contains(speaker))
+			speakers[speaker].name = f.value("name").toString();
 	} else if (type == "transcript.languageStatus") {
 		const QString state = f.value("state").toString();
 		if (state == "mismatch" || state == "change_unsupported")
@@ -394,31 +612,116 @@ void Session::onFrame(const QString &text)
 		if (code == "engine_lost" || !f.value("retryable").toBool())
 			setNotes(languageNote,
 				 message.isEmpty() ? tr("VocalStack stopped transcribing (%1)").arg(code) : message);
+	} else if (type == "recording.settings") {
+		// Changed in the dashboard while recording: the dock follows.
+		const QJsonObject s = f.value("settings").toObject();
+		if (s.contains("spokenLanguage")) {
+			const QString l = s.value("spokenLanguage").toString();
+			if (l != settings->spokenLanguage) {
+				settings->spokenLanguage = l;
+				settings->save();
+				emit spokenLanguageChanged(l);
+			}
+		}
+	} else if (type == "recording.expiring") {
+		const int minutes = qMax(1, int(f.value("endsInS").toDouble() / 60));
+		setNotes(languageNote, tr("VocalStack ends this recording in %n minute(s): the plan's longest recording. "
+					  "Stop and start again for a new one.",
+					  nullptr, minutes));
+	} else if (type == "recording.silence") {
+		const int silent = int(f.value("silentS").toDouble()), in = int(f.value("pausesInS").toDouble());
+		emit status(tr("No speech for %1 s: VocalStack pauses the recording in %2 s").arg(silent).arg(in),
+			    true);
 	} else if (type == "recording.state") {
 		const QString s = f.value("state").toString();
-		if (st == State::Live && (s == "ended" || s == "finalized")) {
+		if (st != State::Live)
+			return;
+		if (s == "ended" || s == "finalized") {
 			// Nothing more is transcribed: stop streaming to VocalStack
 			// too. The recording is over, so it is not paused and stopped.
 			const QString reason = f.value("reason").toString();
 			obs_log(LOG_WARNING, "VocalStack ended the recording (%s)", reason.toUtf8().constData());
 			recordingId.clear();
 			end(tr("VocalStack ended the recording"));
+		} else if (s == "paused") {
+			// Paused by VocalStack (silence) or in the dashboard, while OBS
+			// still streams: left paused it would end, so it goes on.
+			resume();
+		} else if (s == "live") {
+			resuming = false;
+			emit status(tr("Live: VocalStack is transcribing"), false);
 		}
 	}
 }
 
-void Session::showCaption(const QString &words, const QList<qint64> &seqs)
+void Session::resume()
+{
+	if (resuming || recordingId.isEmpty())
+		return;
+	resuming = true;
+	emit status(tr("VocalStack paused the recording; resuming…"), true);
+	api->post("/v1/recordings/" + recordingId + "/resume", {},
+		  [this](int, const QJsonDocument &, const QString &error) {
+			  if (st != State::Live)
+				  return;
+			  if (!error.isEmpty()) {
+				  resuming = false;
+				  emit status(tr("VocalStack paused the recording and would not resume it: %1").arg(error),
+					      true);
+			  }
+		  });
+}
+
+void Session::onEvent(const QString &text)
+{
+	const QJsonObject f = QJsonDocument::fromJson(text.toUtf8()).object();
+	const QString type = f.value("type").toString();
+	if (st != State::Live)
+		return;
+	if (type == "stream.ingest") {
+		if (f.value("recordingId").toString() == recordingId)
+			onIngest(f);
+	} else if (type == "recording.ended") {
+		if (f.value("recordingId").toString() == recordingId) {
+			obs_log(LOG_WARNING, "VocalStack ended the recording");
+			recordingId.clear();
+			end(tr("VocalStack ended the recording"));
+		}
+	}
+}
+
+// Where VocalStack's pull of the stream stands.
+void Session::onIngest(const QJsonObject &f)
+{
+	const QString state = f.value("state").toString();
+	const QString detected = f.value("detected").toString(), error = f.value("error").toString();
+	if (state == "streaming")
+		emit status(tr("Live: VocalStack hears %1").arg(detected.isEmpty() ? tr("the stream") : detected), false);
+	else if (state == "connecting")
+		emit status(error.isEmpty() ? tr("Live, but no audio is reaching VocalStack yet") : error, true);
+	else if (state == "reconnecting")
+		emit status(error.isEmpty() ? tr("VocalStack lost the stream's audio; reconnecting…")
+					    : tr("VocalStack lost the stream's audio (%1); reconnecting…").arg(error),
+			    true);
+	else if (state == "failed")
+		end(error.isEmpty() ? tr("VocalStack gave up on the stream") : tr("VocalStack gave up on the stream: %1").arg(error));
+}
+
+void Session::showCaption(const QString &words, const QList<qint64> &seqs, int speaker)
 {
 	if (words.isEmpty())
 		return;
 	shownSeqs = seqs;
-	emit caption(words);
+	shownSpeaker = speaker;
+	const QString label = speakerLabel(speaker);
+	emit caption(label.isEmpty() ? words : QStringLiteral("%1: %2").arg(label, words));
 	captionClear.start();
 }
 
 void Session::clearCaption()
 {
 	shownSeqs.clear();
+	shownSpeaker = -1;
 	emit caption(QString());
 }
 
@@ -437,7 +740,7 @@ void Session::setNotes(const QString &language, const QString &feed)
 void Session::pollIngest()
 {
 	api->get("/v1/rtmp/keys", [this](int, const QJsonDocument &doc, const QString &error) {
-		if (st != State::Live || !error.isEmpty())
+		if (st != State::Live || !error.isEmpty() || events.isOpen())
 			return;
 		for (const QJsonValue v : doc.object().value("keys").toArray()) {
 			const QJsonObject k = v.toObject();
@@ -451,5 +754,18 @@ void Session::pollIngest()
 				emit status(audio.isEmpty() ? tr("Live, but no audio is reaching VocalStack yet") : audio,
 					    true);
 		}
+	});
+}
+
+// People on the broadcast's link.
+void Session::pollBroadcast()
+{
+	if (settings->broadcastId.isEmpty())
+		return;
+	api->get("/v1/broadcasts/" + settings->broadcastId, [this](int, const QJsonDocument &doc, const QString &error) {
+		if (st != State::Live || !error.isEmpty())
+			return;
+		const QJsonValue n = doc.object().value("listenersNow");
+		emit listeners(n.isDouble() ? n.toInt() : 0);
 	});
 }

@@ -4,6 +4,8 @@
 #include "vocalstack-output.hpp"
 #include "websocket.hpp"
 
+#include <QHash>
+#include <QJsonDocument>
 #include <QObject>
 #include <QTimer>
 
@@ -12,9 +14,11 @@
 class Api;
 
 // One VocalStack session: the stream to VocalStack, the recording on the
-// plugin's live transcription, and the caption feed. Start runs: stream
-// key (made once, kept) → output → broadcast attached → recording started
-// → captions subscribed. Stop runs it back.
+// plugin's live transcription, the transcription's event feed and the
+// caption feed. Start runs: stream key (made once, kept) → output →
+// the plan's limits → transcription (made once, its settings written each
+// time) → broadcast attached → recording started → events and captions
+// subscribed. Stop runs it back.
 class Session : public QObject {
 	Q_OBJECT
 
@@ -28,15 +32,30 @@ public:
 	void stop();
 	// The caption language changed while live: follow it without a restart.
 	void setCaptionLanguage(const QString &lang);
+	// Ask VocalStack the plan's longest live recording (kept in the
+	// settings); on sign-in, and before each Start.
+	void refreshLimits(std::function<void()> then = {});
 
 signals:
 	void stateChanged(Session::State state);
-	// What the dock shows under the button; `error` makes it red.
+	// What the dock shows under the button; `error` makes it red. The
+	// text may carry a link (HTML).
 	void status(const QString &text, bool error);
 	void caption(const QString &text);
 	// A warning that stays until the next Start (the spoken language does
 	// not match the speech, the engine stopped); empty hides it.
 	void notice(const QString &text);
+	// VocalStack refused the caption language (its limit of languages a
+	// recording, say): captions went back to the spoken language.
+	void captionLanguageRefused(const QString &message);
+	// The spoken language was changed in VocalStack's dashboard while
+	// recording; the settings follow it.
+	void spokenLanguageChanged(const QString &lang);
+	// People on the chosen broadcast's link while live; -1 when not live
+	// or no broadcast is chosen.
+	void listeners(int count);
+	// settings->maxDurationS was read from VocalStack.
+	void limitsChanged();
 
 private:
 	using Next = std::function<void()>;
@@ -47,30 +66,54 @@ private:
 	void ensureStreamKey(Next next);
 	void ensureTranscription(Next next);
 	void createTranscription(Next next);
+	void applyTranscriptionSettings(Next next);
+	bool dropLimit(const QJsonDocument &doc);
 	void attachBroadcast(Next next);
 	void startRecording(bool takeover);
+	QJsonObject recordingSettings() const;
 	void subscribe();
+	void openEvents();
 	void onFrame(const QString &text);
-	void showCaption(const QString &words, const QList<qint64> &seqs);
+	void onEvent(const QString &text);
+	void onIngest(const QJsonObject &f);
+	void showCaption(const QString &words, const QList<qint64> &seqs, int speaker);
 	void clearCaption();
 	void setNotes(const QString &language, const QString &feed);
 	void pollIngest();
+	void pollBroadcast();
+	void resume();
+	QString speakerLabel(int speaker) const;
 
 	Api *api;
 	Settings *settings;
 	VocalStackOutput output;
-	WebSocket feed;
-	QTimer ingestPoll, captionClear, resubscribe;
+	// The caption feed (the recording's subscribe socket) and the
+	// transcription's event feed (where the stream's audio stands,
+	// recordings starting and ending).
+	WebSocket feed, events;
+	QTimer ingestPoll, captionClear, resubscribe, reopenEvents, broadcastPoll;
 	State st = State::Idle;
 	QString recordingId;
 	qint64 lastSeq = -1;
-	// The rows the caption on screen was made from.
+	// The feed's cursor when it was (re)opened: frames at or below it
+	// were seen before, and are not captions again.
+	qint64 readyCursor = -1;
+	// The rows the caption on screen was made from, and who spoke them.
 	QList<qint64> shownSeqs;
+	int shownSpeaker = -1;
 	// The recording sends sentences (sentences.enabled): the caption is
 	// made from them only, not also from the rows they are made of.
 	bool sentences = false;
-	// The wait before the caption feed is opened again; it doubles while
-	// the feed keeps closing.
-	int resubscribeMs;
+	// Each speaker's display number and name (transcript.speakerNumbers).
+	struct Speaker {
+		int number = 0;
+		QString name;
+	};
+	QHash<int, Speaker> speakers;
+	// The wait before a feed is opened again; it doubles while the feed
+	// keeps closing.
+	int resubscribeMs, reopenEventsMs;
+	// A resume is on its way for a recording VocalStack paused.
+	bool resuming = false;
 	QString languageNote, feedNote;
 };

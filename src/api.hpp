@@ -29,8 +29,13 @@ public:
 
 	void get(const QString &path, Done done);
 	void post(const QString &path, const QJsonObject &body, Done done);
+	// A post that is safe to send again (a timeout, a 503): the API
+	// answers a repeat with the same `idempotencyKey` and body as it did
+	// the first, instead of acting twice.
+	void post(const QString &path, const QJsonObject &body, const QString &idempotencyKey, Done done);
 	// A post whose refusal never signs the person out (background pings).
 	void postQuiet(const QString &path, const QJsonObject &body, Done done);
+	void patch(const QString &path, const QJsonObject &body, Done done);
 	void put(const QString &path, Done done);
 	void del(const QString &path, Done done);
 	// A form post without the key (OAuth's token endpoint).
@@ -39,13 +44,29 @@ public:
 	// releases, for the update check).
 	void getUrl(const QString &url, Done done);
 
+	// The API's error code of a failed call's body (`insufficient_credit`,
+	// `not_found`…), empty when the body is not the API's.
+	static QString errorCode(const QJsonDocument &body);
+	// `data.details` of a failed call's body ({ blocked: true, … }).
+	static QJsonObject errorDetails(const QJsonDocument &body);
+
 signals:
 	// The key was refused (revoked, deleted): the person must sign in again.
 	void unauthorized();
 
 private:
-	void send(const QString &method, const QString &url, const QByteArray *body, const char *contentType,
-		  bool withKey, Done done, bool quiet = false);
+	struct Request {
+		QString method, url;
+		QByteArray body;
+		bool hasBody = false;
+		QByteArray contentType, idempotencyKey;
+		bool withKey = true, quiet = false;
+		// Sent again once after a 429 or 503 that says when (Retry-After):
+		// reads, and posts that carry an idempotency key.
+		bool retried = false;
+	};
+
+	void send(Request req, Done done);
 
 	QString api, app, apiKey;
 };

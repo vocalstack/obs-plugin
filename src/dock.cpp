@@ -9,22 +9,29 @@
 #include <plugin-support.h>
 
 #include <QCheckBox>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QFormLayout>
+#include <QDesktopServices>
 #include <QEvent>
 #include <QHBoxLayout>
+#include <QHostInfo>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
 #include <QRegularExpression>
+#include <QUrl>
 #include <QMainWindow>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+#include <initializer_list>
 
 // Caption box choices that are not a language.
 static const char *CAPTIONS_OFF = "off";
@@ -90,6 +97,20 @@ Dock::Dock(QWidget *parent)
 		sessionNotice->setText(text);
 		sessionNotice->setVisible(!text.isEmpty());
 	});
+	connect(session, &Session::captionLanguageRefused, this, [this](const QString &message) {
+		captionBox->setCurrentIndex(qMax(0, captionBox->findData(QString())));
+		setStatus(sessionStatus, message.isEmpty() ? tr("VocalStack refused that caption language: captions as spoken")
+							   : tr("Captions as spoken: %1").arg(message),
+			  true);
+	});
+	connect(session, &Session::spokenLanguageChanged, this, [this](const QString &lang) {
+		spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(lang)));
+	});
+	connect(session, &Session::listeners, this, [this](int n) {
+		listenersLabel->setVisible(n >= 0);
+		listenersLabel->setText(tr("%n listening", nullptr, qMax(0, n)));
+	});
+	connect(session, &Session::limitsChanged, this, [this]() { updateLinks(); });
 	connect(session, &Session::caption, this, [this](const QString &text) {
 		if (!qEnvironmentVariableIsEmpty("VOCALSTACK_DEBUG"))
 			obs_log(LOG_INFO, "caption: %s", text.toUtf8().constData());
@@ -183,6 +204,16 @@ QWidget *Dock::buildSignedIn()
 	auto *form = new QFormLayout;
 	form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
+	nameEdit = new QLineEdit;
+	nameEdit->setPlaceholderText(QStringLiteral("OBS on %1").arg(QHostInfo::localHostName()));
+	nameEdit->setText(settings.transcriptionName);
+	nameEdit->setToolTip(tr("The transcription's name in VocalStack"));
+	connect(nameEdit, &QLineEdit::editingFinished, this, [this]() {
+		settings.transcriptionName = nameEdit->text().trimmed().left(200);
+		settings.save();
+	});
+	form->addRow(tr("Name"), nameEdit);
+
 	auto *broadcastRow = new QHBoxLayout;
 	broadcastBox = new QComboBox;
 	auto *refresh = new QToolButton;
@@ -195,14 +226,24 @@ QWidget *Dock::buildSignedIn()
 	add->setText("+");
 	add->setToolTip(tr("New broadcast"));
 	connect(add, &QToolButton::clicked, this, &Dock::newBroadcast);
+	copyBroadcastButton = new QToolButton;
+	copyBroadcastButton->setText(tr("Copy link"));
+	copyBroadcastButton->setToolTip(tr("Copy the broadcast's link, for listeners"));
+	connect(copyBroadcastButton, &QToolButton::clicked, this, &Dock::copyBroadcastLink);
 	broadcastRow->addWidget(broadcastBox, 1);
 	broadcastRow->addWidget(add);
 	broadcastRow->addWidget(refresh);
+	broadcastRow->addWidget(copyBroadcastButton);
 	form->addRow(tr("Broadcast"), broadcastRow);
 	connect(broadcastBox, &QComboBox::activated, this, [this]() {
 		settings.broadcastId = broadcastBox->currentData().toString();
 		settings.save();
+		updateLinks();
 	});
+	listenersLabel = new QLabel;
+	listenersLabel->setStyleSheet("color: #8b8b96;");
+	listenersLabel->hide();
+	form->addRow(QString(), listenersLabel);
 
 	spokenBox = new QComboBox;
 	form->addRow(tr("Spoken language"), spokenBox);
@@ -225,6 +266,31 @@ QWidget *Dock::buildSignedIn()
 		session->setCaptionLanguage(settings.showCaptions ? v : settings.captionLanguage);
 	});
 
+	speakersBox = new QComboBox;
+	speakersBox->addItem(tr("When needed"), "auto");
+	speakersBox->addItem(tr("On"), "on");
+	speakersBox->addItem(tr("Off"), "off");
+	speakersBox->setToolTip(tr("Label each line with who is speaking: when a second speaker is heard, always, or never"));
+	speakersBox->setCurrentIndex(qMax(0, speakersBox->findData(settings.speakerLabels)));
+	form->addRow(tr("Speaker labels"), speakersBox);
+	connect(speakersBox, &QComboBox::activated, this, [this]() {
+		settings.speakerLabels = speakersBox->currentData().toString();
+		settings.save();
+	});
+
+	latencyBox = new QComboBox;
+	latencyBox->addItem(tr("Automatic"), "auto");
+	latencyBox->addItem(tr("Fast"), "fast");
+	latencyBox->addItem(tr("Accurate"), "accuracy");
+	latencyBox->setToolTip(tr("Automatic: the accurate model, the fast one only while it falls behind. "
+				  "Fast: lowest latency. Accurate: never switches."));
+	latencyBox->setCurrentIndex(qMax(0, latencyBox->findData(settings.latencyMode)));
+	form->addRow(tr("Transcription"), latencyBox);
+	connect(latencyBox, &QComboBox::activated, this, [this]() {
+		settings.latencyMode = latencyBox->currentData().toString();
+		settings.save();
+	});
+
 	sendBox = new QComboBox;
 	sendBox->addItem(tr("Audio only"), false);
 	sendBox->addItem(tr("Audio and video"), true);
@@ -235,6 +301,22 @@ QWidget *Dock::buildSignedIn()
 		settings.save();
 	});
 	v->addLayout(form);
+
+	aiBox = new QCheckBox(tr("AI title and summary of each recording"));
+	aiBox->setChecked(settings.aiSummary);
+	connect(aiBox, &QCheckBox::toggled, this, [this](bool on) {
+		settings.aiSummary = on;
+		settings.save();
+	});
+	v->addWidget(aiBox);
+
+	lockBox = new QCheckBox(tr("Lock the transcription against deletion"));
+	lockBox->setChecked(settings.locked);
+	connect(lockBox, &QCheckBox::toggled, this, [this](bool on) {
+		settings.locked = on;
+		settings.save();
+	});
+	v->addWidget(lockBox);
 
 	followBox = new QCheckBox(tr("Start and stop with OBS streaming or recording"));
 	followBox->setChecked(settings.followObs);
@@ -257,8 +339,16 @@ QWidget *Dock::buildSignedIn()
 	v->addWidget(followHint);
 	updateFollowHint();
 
+	// The plan's longest recording, once VocalStack has said.
+	limitHint = new QLabel;
+	limitHint->setWordWrap(true);
+	limitHint->setStyleSheet("color: #8b8b96;");
+	limitHint->hide();
+	v->addWidget(limitHint);
+
 	sessionStatus = new QLabel;
 	sessionStatus->setWordWrap(true);
+	sessionStatus->setOpenExternalLinks(true);
 	v->addWidget(sessionStatus);
 	// What VocalStack warns about while live (the speech is another
 	// language than the spoken language set), kept until the next Start.
@@ -267,8 +357,79 @@ QWidget *Dock::buildSignedIn()
 	sessionNotice->setStyleSheet("color: #f0a63a;"); // amber on dark and light themes
 	sessionNotice->hide();
 	v->addWidget(sessionNotice);
+
+	// The transcription in VocalStack: open it, or share it.
+	auto *links = new QHBoxLayout;
+	openButton = new QToolButton;
+	openButton->setText(tr("Open in VocalStack"));
+	connect(openButton, &QToolButton::clicked, this, &Dock::openTranscription);
+	copyLinkButton = new QToolButton;
+	copyLinkButton->setText(tr("Copy transcript link"));
+	copyLinkButton->setToolTip(tr("A link anyone can read the transcription with"));
+	connect(copyLinkButton, &QToolButton::clicked, this, &Dock::copyTranscriptLink);
+	links->addWidget(openButton);
+	links->addWidget(copyLinkButton);
+	links->addStretch(1);
+	v->addLayout(links);
+	updateLinks();
 	v->addStretch(1);
 	return page;
+}
+
+// The link buttons follow whether there is a transcription or a broadcast
+// yet; the limit hint, the plan's longest recording.
+void Dock::updateLinks()
+{
+	const bool tx = !settings.transcriptionId.isEmpty();
+	openButton->setEnabled(tx);
+	copyLinkButton->setEnabled(tx);
+	copyBroadcastButton->setEnabled(broadcastLinks.contains(settings.broadcastId));
+	if (settings.maxDurationS > 0) {
+		const int h = settings.maxDurationS / 3600, m = (settings.maxDurationS % 3600) / 60;
+		limitHint->setText(m == 0 ? tr("Your plan records up to %n hour(s) at a time.", nullptr, h)
+					  : tr("Your plan records up to %1 h %2 min at a time.").arg(h).arg(m));
+		limitHint->show();
+	} else {
+		limitHint->hide();
+	}
+}
+
+void Dock::openTranscription()
+{
+	if (!settings.transcriptionId.isEmpty())
+		QDesktopServices::openUrl(QUrl(api->appBase() + "/transcriptions/" + settings.transcriptionId));
+}
+
+void Dock::copyBroadcastLink()
+{
+	const QString url = broadcastLinks.value(settings.broadcastId);
+	if (url.isEmpty())
+		return;
+	QGuiApplication::clipboard()->setText(url);
+	setStatus(sessionStatus, tr("Broadcast link copied"), false);
+}
+
+// A share link of the transcription, made once per click (each is its own
+// link, revocable in VocalStack).
+void Dock::copyTranscriptLink()
+{
+	if (settings.transcriptionId.isEmpty())
+		return;
+	copyLinkButton->setEnabled(false);
+	QJsonObject body{{"label", tr("OBS")}};
+	api->post("/v1/transcriptions/" + settings.transcriptionId + "/share-links", body,
+		  [this](int, const QJsonDocument &doc, const QString &error) {
+			  copyLinkButton->setEnabled(true);
+			  if (!error.isEmpty()) {
+				  setStatus(sessionStatus, tr("Could not make a link: %1").arg(error), true);
+				  return;
+			  }
+			  const QString url = doc.object().value("url").toString();
+			  if (url.isEmpty())
+				  return;
+			  QGuiApplication::clipboard()->setText(url);
+			  setStatus(sessionStatus, tr("Transcript link copied"), false);
+		  });
 }
 
 void Dock::setOverlay(CaptionOverlay *o)
@@ -291,6 +452,8 @@ void Dock::showSignedIn(bool in)
 							 : tr("Signed in to <b>%1</b>").arg(settings.account.toHtmlEscaped()));
 	loadLists();
 	loadBroadcasts();
+	session->refreshLimits();
+	updateLinks();
 	checkForUpdate();
 }
 
@@ -333,14 +496,31 @@ void Dock::useKey()
 		return;
 	api->setKey(key);
 	setStatus(signInStatus, tr("Checking the key…"), false);
-	api->get("/v1/broadcasts", [this, key](int, const QJsonDocument &, const QString &error) {
+	api->get("/v1/me", [this, key](int, const QJsonDocument &doc, const QString &error) {
 		if (!error.isEmpty()) {
 			api->setKey(settings.apiKey);
 			setStatus(signInStatus, tr("VocalStack refused the key: %1").arg(error), true);
 			return;
 		}
+		const QJsonObject me = doc.object();
+		QStringList scopes;
+		for (const QJsonValue s : me.value("scopes").toArray())
+			scopes.append(s.toString());
+		QStringList missing;
+		for (const QString &need : {QStringLiteral("write"), QStringLiteral("recordings:publish")})
+			if (!scopes.contains("*") && !scopes.contains(need))
+				missing.append(need);
+		if (!missing.isEmpty()) {
+			api->setKey(settings.apiKey);
+			setStatus(signInStatus,
+				  tr("This key cannot transcribe: it lacks the %1 scope. Make one with read, write and "
+				     "recordings:publish in Developers → API keys.")
+					  .arg(missing.join(tr(" and "))),
+				  true);
+			return;
+		}
 		keyEdit->clear();
-		signedIn(key, QString());
+		signedIn(key, me.value("displayName").toString());
 	});
 }
 
@@ -355,6 +535,11 @@ void Dock::signOut(const QString &why)
 	settings = Settings();
 	settings.sendVideo = kept.sendVideo;
 	settings.followObs = kept.followObs;
+	settings.speakerLabels = kept.speakerLabels;
+	settings.latencyMode = kept.latencyMode;
+	settings.aiSummary = kept.aiSummary;
+	settings.transcriptionName = kept.transcriptionName;
+	broadcastLinks.clear();
 	settings.save();
 	warm->refresh(); // canStart false while the key still works
 	api->setKey(QString());
@@ -405,11 +590,13 @@ void Dock::loadBroadcasts()
 			setStatus(sessionStatus, tr("Could not load the broadcasts: %1").arg(error), true);
 			return;
 		}
+		broadcastLinks.clear();
 		for (const QJsonValue v : doc.object().value("broadcasts").toArray()) {
 			const QJsonObject b = v.toObject();
-			if (b.value("archivedAt").isString())
+			if (b.value("archivedAt").isString() || b.value("lifecycle").toString() == "archived")
 				continue;
 			broadcastBox->addItem(b.value("name").toString(), b.value("id").toString());
+			broadcastLinks.insert(b.value("id").toString(), b.value("shareUrl").toString());
 		}
 		const int at = broadcastBox->findData(settings.broadcastId);
 		broadcastBox->setCurrentIndex(qMax(0, at));
@@ -417,6 +604,7 @@ void Dock::loadBroadcasts()
 			settings.broadcastId.clear(); // deleted or archived since
 			settings.save();
 		}
+		updateLinks();
 	});
 }
 
@@ -448,9 +636,10 @@ void Dock::onState(Session::State s)
 								  : tr("Stop transcribing"));
 	startButton->setEnabled(s != Session::State::Stopping);
 	updateFollowHint();
-	broadcastBox->setEnabled(idle);
-	spokenBox->setEnabled(idle);
-	sendBox->setEnabled(idle);
+	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, spokenBox, sendBox, nameEdit, speakersBox,
+							  latencyBox, aiBox, lockBox})
+		w->setEnabled(idle);
+	updateLinks();
 	// Starting: canStart false; back to idle: true again if still in use.
 	warm->refresh();
 }

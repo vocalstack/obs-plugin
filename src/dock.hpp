@@ -3,6 +3,7 @@
 #include "session.hpp"
 #include "settings.hpp"
 
+#include <QHash>
 #include <QWidget>
 
 class Api;
@@ -15,6 +16,7 @@ class QLineEdit;
 class QMainWindow;
 class QPushButton;
 class QStackedWidget;
+class QToolButton;
 class WarmPing;
 
 // The VocalStack dock: sign-in, then what to send and where, Start/Stop,
@@ -56,9 +58,13 @@ private:
 	void loadLists();
 	void loadBroadcasts();
 	void newBroadcast();
+	void copyBroadcastLink();
+	void copyTranscriptLink();
+	void openTranscription();
 	void onState(Session::State s);
 	void setStatus(QLabel *label, const QString &text, bool error);
 	void updateFollowHint();
+	void updateLinks();
 	void checkForUpdate();
 
 	Api *api;
@@ -69,6 +75,8 @@ private:
 	WarmPing *warm = nullptr;
 	bool closeHeld = false;
 	bool updateChecked = false;
+	// Each broadcast's link, by id, from the last load.
+	QHash<QString, QString> broadcastLinks;
 
 	QStackedWidget *pages;
 	// Signed out.
@@ -77,8 +85,11 @@ private:
 	QLabel *signInStatus;
 	// Signed in.
 	QLabel *accountLabel;
-	QComboBox *broadcastBox, *spokenBox, *captionBox, *sendBox;
-	QCheckBox *followBox;
+	QComboBox *broadcastBox, *spokenBox, *captionBox, *sendBox, *speakersBox, *latencyBox;
+	QLineEdit *nameEdit;
+	QCheckBox *followBox, *aiBox, *lockBox;
+	QToolButton *copyBroadcastButton, *copyLinkButton, *openButton;
+	QLabel *listenersLabel, *limitHint;
 	QPushButton *startButton;
 	QLabel *followHint, *sessionStatus, *sessionNotice, *updateNotice;
 };

@@ -25,6 +25,8 @@ Settings Settings::load()
 		return s;
 	obs_data_set_default_bool(d, "followObs", true);
 	obs_data_set_default_bool(d, "showCaptions", true);
+	obs_data_set_default_string(d, "speakerLabels", "auto");
+	obs_data_set_default_string(d, "latencyMode", "auto");
 	s.apiKey = str(d, "apiKey");
 	s.account = str(d, "account");
 	s.streamKey = str(d, "streamKey");
@@ -35,6 +37,12 @@ Settings Settings::load()
 	s.attachedBroadcastId = str(d, "attachedBroadcastId");
 	s.spokenLanguage = str(d, "spokenLanguage");
 	s.captionLanguage = str(d, "captionLanguage");
+	s.transcriptionName = str(d, "transcriptionName");
+	s.speakerLabels = str(d, "speakerLabels");
+	s.latencyMode = str(d, "latencyMode");
+	s.aiSummary = obs_data_get_bool(d, "aiSummary");
+	s.locked = obs_data_get_bool(d, "locked");
+	s.maxDurationS = int(obs_data_get_int(d, "maxDurationS"));
 	s.sendVideo = obs_data_get_bool(d, "sendVideo");
 	s.followObs = obs_data_get_bool(d, "followObs");
 	s.showCaptions = obs_data_get_bool(d, "showCaptions");
@@ -47,7 +55,6 @@ void Settings::save() const
 	char *dir = obs_module_config_path("");
 	os_mkdirs(dir);
 	bfree(dir);
-
 	OBSDataAutoRelease d = obs_data_create();
 	auto set = [&](const char *name, const QString &v) { obs_data_set_string(d, name, v.toUtf8().constData()); };
 	set("apiKey", apiKey);
@@ -60,6 +67,12 @@ void Settings::save() const
 	set("attachedBroadcastId", attachedBroadcastId);
 	set("spokenLanguage", spokenLanguage);
 	set("captionLanguage", captionLanguage);
+	set("transcriptionName", transcriptionName);
+	set("speakerLabels", speakerLabels);
+	set("latencyMode", latencyMode);
+	obs_data_set_bool(d, "aiSummary", aiSummary);
+	obs_data_set_bool(d, "locked", locked);
+	obs_data_set_int(d, "maxDurationS", maxDurationS);
 	obs_data_set_bool(d, "sendVideo", sendVideo);
 	obs_data_set_bool(d, "followObs", followObs);
 	obs_data_set_bool(d, "showCaptions", showCaptions);

@@ -194,7 +194,7 @@ void WebSocket::onReadyRead()
 		buffer.remove(0, end + 4);
 		const QList<QByteArray> status = lines.value(0).trimmed().split(' ');
 		if (status.value(1) != "101") {
-			fail(tr("The server refused the caption feed (HTTP %1)").arg(QString::fromLatin1(status.value(1))));
+			fail(tr("The server refused the feed (HTTP %1)").arg(QString::fromLatin1(status.value(1))));
 			return;
 		}
 		QByteArray got;
@@ -239,7 +239,7 @@ void WebSocket::readFrames()
 			at = 10;
 		}
 		if (len > MAX_FRAME) {
-			fail(tr("A caption frame was too large"));
+			fail(tr("A frame was too large"));
 			return;
 		}
 		const int maskAt = at;
@@ -266,8 +266,10 @@ void WebSocket::readFrames()
 			// The server closed it: answered with its code (RFC 6455
 			// §5.5.1), and not taken for our own close().
 			const int code = payload.size() >= 2 ? (quint8(payload[0]) << 8) | quint8(payload[1]) : 1005;
+			const QString why = QString::fromUtf8(payload.mid(2)).trimmed();
 			sendFrame(0x8, payload.left(2));
-			fail(tr("VocalStack closed the caption feed (%1)").arg(code), code);
+			// The server's own words when it gave any; the session logs the code.
+			fail(why.isEmpty() ? tr("VocalStack closed the feed (%1)").arg(code) : why, code);
 			return;
 		}
 		case 0x9:

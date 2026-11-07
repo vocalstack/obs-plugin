@@ -7,12 +7,18 @@ see the captions over OBS's preview. Captions never go into your stream or recor
 
 Read more about the [VocalStack live transcription plugin for OBS Studio](https://vocalstack.com/obs-studio-transcription-plugin/) on the [VocalStack website](https://vocalstack.com/).
 
-- A **VocalStack dock** in OBS: sign in with one click (or an API key), pick a broadcast, set the spoken
-  language and choose captions as spoken or translated.
+- A **VocalStack dock** in OBS: sign in with one click (or an API key), name the transcription, pick a
+  broadcast, set the spoken language and choose captions as spoken or translated. Speaker labels, the
+  transcription mode (automatic, fast, accurate), an AI title and summary of each recording, and a lock
+  against deletion are set from the dock too.
 - **Start transcribing** from the dock or a hotkey, or let it start and stop with OBS's own streaming or
-  recording.
+  recording. Each recording asks for the longest length your plan allows.
 - The plugin sends OBS's audio (or audio and video) to VocalStack over its own connection, so the stream
-  your viewers see is untouched. Transcriptions are saved in your VocalStack account.
+  your viewers see is untouched. Transcriptions are saved in your VocalStack account; the dock opens them
+  in VocalStack, copies a share link, and copies the broadcast's link (with how many are listening).
+- **Captions** over the preview name the speaker once more than one has been heard, follow corrections
+  made in the dashboard, and fall back to the spoken language when VocalStack refuses a translation (a
+  recording has at most ten languages).
 
 ## Download
 
@@ -67,8 +73,9 @@ release without them fails rather than ship unsigned; other builds are signed ad
 
 The plugin sends nothing until you sign in. When you start transcribing it sends OBS's audio (or
 audio and video, if you choose) to VocalStack, and nowhere else, to transcribe it into your VocalStack account;
-see the [VocalStack Privacy Policy](https://vocalstack.com/privacy/). Signing out stops it and removes the
-plugin's stream key. Once you are signed in, it also asks GitHub once each time OBS starts whether a
+see the [VocalStack Privacy Policy](https://vocalstack.com/privacy/). While signed in it also asks VocalStack
+who the key is, the plan's limits, your broadcasts and languages, and follows the transcription's own event
+feed while live. Signing out stops it and removes the plugin's stream key. Once you are signed in, it also asks GitHub once each time OBS starts whether a
 newer release of the plugin is out; that request carries only the plugin's version.
 
 ## Licence

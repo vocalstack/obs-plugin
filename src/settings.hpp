@@ -18,6 +18,19 @@ struct Settings {
 	QString attachedBroadcastId;
 	QString spokenLanguage;  // empty: detect
 	QString captionLanguage; // empty: the spoken language
+	// The transcription's name in VocalStack; empty: "OBS on <host>".
+	QString transcriptionName;
+	// VocalStack's recording settings, sent with the transcription:
+	// speaker labels (auto, on, off), latency mode (auto, fast, accuracy).
+	QString speakerLabels = "auto";
+	QString latencyMode = "auto";
+	// The language model's title and summary of each recording (opt-in).
+	bool aiSummary = false;
+	// The transcription cannot be archived in VocalStack while locked.
+	bool locked = false;
+	// The longest live recording the plan allows, in seconds, as
+	// VocalStack last said (GET /v1/realtime/capabilities); 0: unknown.
+	int maxDurationS = 0;
 	bool sendVideo = false;
 	bool followObs = true;
 	bool showCaptions = true;
