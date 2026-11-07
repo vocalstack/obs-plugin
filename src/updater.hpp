@@ -4,6 +4,8 @@
 #include <QString>
 #include <QTimer>
 
+#include <functional>
+
 class Api;
 
 // The plugin's releases (GitHub, as the Chrome extension's unpacked
@@ -23,8 +25,11 @@ public:
 
 	explicit Updater(Api *api, QObject *parent = nullptr);
 
-	// Ask GitHub (at most every 6 hours unless `force`).
+	// Ask GitHub (at most every 8 hours unless `force`).
 	void check(bool force = false);
+	// Whether an update may be downloaded and installed now: nothing is
+	// being transcribed.
+	void setMayInstall(std::function<bool()> may) { mayInstall = std::move(may); }
 	// Download and install the newest release.
 	void install();
 	// OBS is quitting: finish a Windows update that waits for it.
@@ -51,10 +56,16 @@ private:
 	void installWindows(const QString &file);
 
 	Api *api;
+	std::function<bool()> mayInstall = []() { return true; };
+	// Every few minutes: whether 8 hours have passed by the wall clock,
+	// which also counts the time a computer slept.
 	QTimer again;
 	qint64 checkedAt = 0;
 	Step st = Step::Idle;
 	QString latestVersion, assetUrl, assetSha, text;
+	// A release downloaded and checked while something was being
+	// transcribed: installed once nothing is.
+	QString downloaded, downloadedVersion;
 	// Windows: the unpacked release, copied in when OBS quits.
 	QString staged;
 	bool bad = false;

@@ -71,38 +71,27 @@ Dock::Dock(QWidget *parent)
 	layout->setContentsMargins(8, 8, 8, 8);
 	layout->addSpacing(12);
 	auto *head = new QHBoxLayout;
+	head->addWidget(logo(this), 0, Qt::AlignVCenter);
 	head->addStretch(1);
-	head->addWidget(logo(this));
-	head->addStretch(1);
+	auto *dashboard = new QPushButton(tr("Dashboard"));
+	dashboard->setToolTip(tr("Open the VocalStack dashboard"));
+	connect(dashboard, &QPushButton::clicked, this, [this]() { QDesktopServices::openUrl(QUrl(api->appBase())); });
+	head->addWidget(dashboard, 0, Qt::AlignVCenter);
 	layout->addLayout(head);
 	layout->addSpacing(14);
-	// A newer release: what it is and how it is going, and the button that
-	// installs it when it is not installed by itself.
-	auto *updateRow = new QHBoxLayout;
-	updateNotice = new QLabel;
-	updateNotice->setWordWrap(true);
-	updateNotice->setTextFormat(Qt::RichText);
-	updateNotice->setOpenExternalLinks(true);
-	updateNotice->hide();
-	updateButton = new QPushButton(tr("Update now"));
-	updateButton->hide();
-	connect(updateButton, &QPushButton::clicked, this, [this]() { updater->install(); });
-	updateRow->addWidget(updateNotice, 1);
-	updateRow->addWidget(updateButton);
-	layout->addLayout(updateRow);
 	connect(updater, &Updater::changed, this, &Dock::showUpdate);
+	updater->setMayInstall([this]() { return session->state() == Session::State::Idle; });
 	layout->addWidget(pages, 1);
 	// Which build this is, at the foot of the dock.
 	auto *version = new QLabel(tr("VocalStack for OBS %1").arg(PLUGIN_VERSION));
 	version->setStyleSheet("color: #8b8b96;");
 	version->setAlignment(Qt::AlignRight);
 	layout->addWidget(version);
-	// Captions show always, in the language spoken; the transcription keeps
-	// its default name.
+	// Captions show always, in the language spoken.
 	settings.captionLanguage.clear();
 	settings.showCaptions = true;
-	settings.transcriptionName.clear();
 	pages->addWidget(buildSignedOut());
+	pages->addWidget(buildSettings()); // before the signed-in page uses its widgets
 	pages->addWidget(buildSignedIn());
 
 	connect(login, &ConnectLogin::finished, this,
@@ -266,18 +255,6 @@ QWidget *Dock::buildSignedIn()
 			warm->languageChanged();
 	});
 
-	speakersBox = new QComboBox;
-	speakersBox->addItem(tr("When needed"), "auto");
-	speakersBox->addItem(tr("On"), "on");
-	speakersBox->addItem(tr("Off"), "off");
-	speakersBox->setToolTip(tr("Label each line with who is speaking: when a second speaker is heard, always, or never"));
-	speakersBox->setCurrentIndex(qMax(0, speakersBox->findData(settings.speakerLabels)));
-	form->addRow(tr("Speaker labels"), speakersBox);
-	connect(speakersBox, &QComboBox::activated, this, [this]() {
-		settings.speakerLabels = speakersBox->currentData().toString();
-		settings.save();
-	});
-
 	sendBox = new QComboBox;
 	sendBox->addItem(tr("Audio only"), false);
 	sendBox->addItem(tr("Audio and video"), true);
@@ -288,23 +265,6 @@ QWidget *Dock::buildSignedIn()
 		settings.save();
 	});
 	v->addLayout(form);
-
-	lockBox = new QCheckBox(tr("Lock the transcription against deletion"));
-	lockBox->setChecked(settings.locked);
-	connect(lockBox, &QCheckBox::toggled, this, [this](bool on) {
-		settings.locked = on;
-		settings.save();
-	});
-	v->addWidget(lockBox);
-
-	followBox = new QCheckBox(tr("Start and stop with OBS streaming or recording"));
-	followBox->setChecked(settings.followObs);
-	connect(followBox, &QCheckBox::toggled, this, [this](bool on) {
-		settings.followObs = on;
-		settings.save();
-		updateFollowHint();
-	});
-	v->addWidget(followBox);
 
 	startButton = new QPushButton(tr("Start transcribing"));
 	startButton->setMinimumHeight(32);
@@ -332,22 +292,114 @@ QWidget *Dock::buildSignedIn()
 
 	// The transcription in VocalStack: open it, or share it.
 	auto *links = new QHBoxLayout;
-	openButton = new QToolButton;
-	openButton->setText(tr("Open in VocalStack"));
-	connect(openButton, &QToolButton::clicked, this, &Dock::openTranscription);
-	copyLinkButton = new QToolButton;
-	copyLinkButton->setText(tr("Copy transcript link"));
+	openButton = new QPushButton(tr("Open in VocalStack"));
+	openButton->setMinimumHeight(32);
+	connect(openButton, &QPushButton::clicked, this, &Dock::openTranscription);
+	copyLinkButton = new QPushButton(tr("Copy transcript link"));
+	copyLinkButton->setMinimumHeight(32);
 	copyLinkButton->setToolTip(tr("A link anyone can read the transcription with"));
-	connect(copyLinkButton, &QToolButton::clicked, this, &Dock::copyTranscriptLink);
-	links->addWidget(openButton);
-	links->addWidget(copyLinkButton);
-	links->addStretch(1);
+	connect(copyLinkButton, &QPushButton::clicked, this, &Dock::copyTranscriptLink);
+	links->addWidget(openButton, 1);
+	links->addWidget(copyLinkButton, 1);
 	v->addLayout(links);
 	updateLinks();
 	v->addStretch(1);
 
-	auto *prefs = new QGroupBox(tr("Settings"));
-	auto *pv = new QVBoxLayout(prefs);
+	// A newer release: what it is and how it is going, and the button that
+	// installs it when it is not installed by itself.
+	auto *updateRow = new QHBoxLayout;
+	updateNotice = new QLabel;
+	updateNotice->setWordWrap(true);
+	updateNotice->setTextFormat(Qt::RichText);
+	updateNotice->setOpenExternalLinks(true);
+	updateNotice->hide();
+	updateButton = new QPushButton(tr("Update now"));
+	updateButton->hide();
+	connect(updateButton, &QPushButton::clicked, this, [this]() {
+		updateWanted = true;
+		showUpdate();
+	});
+	updateRow->addWidget(updateNotice, 1);
+	updateRow->addWidget(updateButton);
+	v->addLayout(updateRow);
+
+	// Who is signed in, at the foot, with the settings.
+	auto *account = new QHBoxLayout;
+	accountLabel = new QLabel;
+	accountLabel->setWordWrap(true);
+	auto *settingsButton = new QToolButton;
+	settingsButton->setText(tr("Settings"));
+	connect(settingsButton, &QToolButton::clicked, this, [this]() { pages->setCurrentIndex(1); });
+	auto *signOutButton = new QToolButton;
+	signOutButton->setText(tr("Sign out"));
+	connect(signOutButton, &QToolButton::clicked, this, [this]() { signOut(QString()); });
+	account->addWidget(accountLabel, 1);
+	account->addWidget(settingsButton);
+	account->addWidget(signOutButton);
+	v->addLayout(account);
+	return page;
+}
+
+// The settings, a page of their own: Back returns to the dock.
+QWidget *Dock::buildSettings()
+{
+	auto *page = new QWidget;
+	auto *v = new QVBoxLayout(page);
+	v->setContentsMargins(0, 0, 0, 0);
+
+	auto *back = new QPushButton(tr("‹ Back"));
+	connect(back, &QPushButton::clicked, this, [this]() { pages->setCurrentIndex(2); });
+	auto *top = new QHBoxLayout;
+	top->addWidget(back);
+	top->addStretch(1);
+	v->addLayout(top);
+
+	auto *tx = new QGroupBox(tr("Transcription"));
+	auto *form = new QFormLayout(tx);
+	form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	nameEdit = new QLineEdit;
+	nameEdit->setPlaceholderText(tr("OBS on %1 (optional)").arg(QHostInfo::localHostName()));
+	nameEdit->setText(settings.transcriptionName);
+	nameEdit->setToolTip(tr("The transcription's name in VocalStack"));
+	connect(nameEdit, &QLineEdit::editingFinished, this, [this]() {
+		settings.transcriptionName = nameEdit->text().trimmed().left(200);
+		settings.save();
+	});
+	form->addRow(tr("Name"), nameEdit);
+	speakersBox = new QComboBox;
+	speakersBox->addItem(tr("When needed"), "auto");
+	speakersBox->addItem(tr("On"), "on");
+	speakersBox->addItem(tr("Off"), "off");
+	speakersBox->setToolTip(tr("Label each line with who is speaking: when a second speaker is heard, always, or never"));
+	speakersBox->setCurrentIndex(qMax(0, speakersBox->findData(settings.speakerLabels)));
+	form->addRow(tr("Speaker labels"), speakersBox);
+	connect(speakersBox, &QComboBox::activated, this, [this]() {
+		settings.speakerLabels = speakersBox->currentData().toString();
+		settings.save();
+	});
+	lockBox = new QCheckBox(tr("Lock the transcription against deletion"));
+	lockBox->setChecked(settings.locked);
+	connect(lockBox, &QCheckBox::toggled, this, [this](bool on) {
+		settings.locked = on;
+		settings.save();
+	});
+	form->addRow(lockBox);
+	v->addWidget(tx);
+
+	auto *obs = new QGroupBox(tr("OBS"));
+	auto *ov = new QVBoxLayout(obs);
+	followBox = new QCheckBox(tr("Start and stop with OBS streaming or recording"));
+	followBox->setChecked(settings.followObs);
+	connect(followBox, &QCheckBox::toggled, this, [this](bool on) {
+		settings.followObs = on;
+		settings.save();
+		updateFollowHint();
+	});
+	ov->addWidget(followBox);
+	v->addWidget(obs);
+
+	auto *updates = new QGroupBox(tr("Updates"));
+	auto *uv = new QVBoxLayout(updates);
 	autoUpdateBox = new QCheckBox(tr("Install updates automatically"));
 	autoUpdateBox->setToolTip(tr("A newer release is installed while nothing is being transcribed; restart OBS to use it"));
 	autoUpdateBox->setChecked(settings.autoUpdate);
@@ -356,19 +408,9 @@ QWidget *Dock::buildSignedIn()
 		settings.save();
 		showUpdate();
 	});
-	pv->addWidget(autoUpdateBox);
-	v->addWidget(prefs);
-
-	// Who is signed in, at the foot.
-	auto *account = new QHBoxLayout;
-	accountLabel = new QLabel;
-	accountLabel->setWordWrap(true);
-	auto *signOutButton = new QToolButton;
-	signOutButton->setText(tr("Sign out"));
-	connect(signOutButton, &QToolButton::clicked, this, [this]() { signOut(QString()); });
-	account->addWidget(accountLabel, 1);
-	account->addWidget(signOutButton);
-	v->addLayout(account);
+	uv->addWidget(autoUpdateBox);
+	v->addWidget(updates);
+	v->addStretch(1);
 	return page;
 }
 
@@ -404,11 +446,13 @@ void Dock::showUpdate()
 	QString text = updater->message();
 	bool problem = updater->problem();
 	const bool pending = age != Updater::Age::Current && step == Updater::Step::Idle;
-	if (pending && settings.autoUpdate && !settings.apiKey.isEmpty() && session->state() == Session::State::Idle &&
-	    !problem) {
+	if (pending && (settings.autoUpdate || updateWanted) && !settings.apiKey.isEmpty() && !problem &&
+	    session->state() == Session::State::Idle) {
 		updater->install(); // says how it goes through changed()
 		return;
 	}
+	if (pending && updateWanted && text.isEmpty())
+		text = tr("VocalStack for OBS %1 installs once you stop transcribing.").arg(latest);
 	if (text.isEmpty() && pending) {
 		switch (age) {
 		case Updater::Age::Available:
@@ -432,7 +476,7 @@ void Dock::showUpdate()
 	updateNotice->setText(text);
 	updateNotice->setStyleSheet(problem ? "color: #f0a63a;" : "");
 	updateNotice->setVisible(!text.isEmpty());
-	updateButton->setVisible(pending);
+	updateButton->setVisible(pending && !settings.autoUpdate && !updateWanted);
 	updateButton->setEnabled(pending);
 	// An unsupported version does not start.
 	const bool blocked = age == Updater::Age::Unsupported && step != Updater::Step::Installed;
@@ -500,7 +544,7 @@ void Dock::setStatus(QLabel *label, const QString &text, bool error)
 
 void Dock::showSignedIn(bool in)
 {
-	pages->setCurrentIndex(in ? 1 : 0);
+	pages->setCurrentIndex(in ? 2 : 0);
 	if (!in)
 		return;
 	accountLabel->setText(settings.account.isEmpty() ? tr("Signed in with an API key")
@@ -669,7 +713,7 @@ void Dock::onState(Session::State s)
 								  : tr("Stop transcribing"));
 	startButton->setEnabled(s != Session::State::Stopping);
 	updateFollowHint();
-	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, spokenBox, sendBox, speakersBox, lockBox})
+	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, spokenBox, sendBox, speakersBox, lockBox, nameEdit})
 		w->setEnabled(idle);
 	updateLinks();
 	showUpdate(); // idle again: an update waiting may install

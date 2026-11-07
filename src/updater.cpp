@@ -18,8 +18,11 @@
 #include <QStandardPaths>
 
 static const char *RELEASES = "https://api.github.com/repos/vocalstack/obs-plugin/releases/latest";
-// GitHub allows 60 asks an hour per address: asked again after 6 hours.
-static const qint64 FRESH_MS = 6 * 60 * 60 * 1000;
+// Asked again after 8 hours (GitHub allows 60 asks an hour per address).
+static const qint64 FRESH_MS = 8 * 60 * 60 * 1000;
+// How often the wall clock is looked at: after a sleep, the first look
+// finds the 8 hours past and asks.
+static const int TICK_MS = 5 * 60 * 1000;
 
 #if defined(__APPLE__)
 static const char *ASSET = "vocalstack-obs-macos.pkg";
@@ -31,8 +34,8 @@ static const char *ASSET = "vocalstack-obs-linux-x86_64.deb";
 
 Updater::Updater(Api *api_, QObject *parent) : QObject(parent), api(api_)
 {
-	again.setInterval(int(FRESH_MS));
-	connect(&again, &QTimer::timeout, this, [this]() { check(true); });
+	again.setInterval(TICK_MS);
+	connect(&again, &QTimer::timeout, this, [this]() { check(false); });
 }
 
 bool Updater::canInstall()
@@ -119,6 +122,14 @@ void Updater::install()
 {
 	if (st != Step::Idle || latestVersion.isEmpty())
 		return;
+	if (!mayInstall()) {
+		say(Step::Idle, tr("VocalStack for OBS %1 installs once you stop transcribing.").arg(latestVersion));
+		return;
+	}
+	if (!downloaded.isEmpty() && downloadedVersion == latestVersion && QFile::exists(downloaded)) {
+		verifyAndInstall(downloaded);
+		return;
+	}
 	if (assetUrl.isEmpty() || assetSha.isEmpty()) {
 		say(Step::Idle, tr("The release has no installer for this system yet"), true);
 		return;
@@ -131,6 +142,13 @@ void Updater::install()
 	api->download(assetUrl, file, [this, file](int, const QString &error) {
 		if (!error.isEmpty()) {
 			say(Step::Idle, tr("Could not download the update: %1").arg(error), true);
+			return;
+		}
+		downloaded = file;
+		downloadedVersion = latestVersion;
+		// A transcription started meanwhile: installed once it stops.
+		if (!mayInstall()) {
+			say(Step::Idle, tr("VocalStack for OBS %1 installs once you stop transcribing.").arg(latestVersion));
 			return;
 		}
 		verifyAndInstall(file);

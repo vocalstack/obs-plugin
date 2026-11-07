@@ -53,6 +53,7 @@ protected:
 private:
 	QWidget *buildSignedOut();
 	QWidget *buildSignedIn();
+	QWidget *buildSettings();
 	void showSignedIn(bool in);
 	void signedIn(const QString &key, const QString &account);
 	void signOut(const QString &why);
@@ -79,6 +80,9 @@ private:
 	WarmPing *warm = nullptr;
 	Updater *updater;
 	bool closeHeld = false;
+	// "Update now" was clicked: the update installs once nothing is being
+	// transcribed, even with automatic updates off.
+	bool updateWanted = false;
 	// Each broadcast's link and capture settings, by id, from the last load.
 	QHash<QString, QString> broadcastLinks;
 	QHash<QString, QJsonObject> broadcastSettings;
@@ -91,8 +95,10 @@ private:
 	// Signed in.
 	QLabel *accountLabel;
 	QComboBox *broadcastBox, *spokenBox, *sendBox, *speakersBox;
+	QLineEdit *nameEdit;
 	QCheckBox *followBox, *lockBox, *autoUpdateBox;
-	QToolButton *copyBroadcastButton, *copyLinkButton, *openButton;
+	QToolButton *copyBroadcastButton;
+	QPushButton *copyLinkButton, *openButton;
 	QLabel *listenersLabel;
 	QPushButton *startButton, *updateButton;
 	QLabel *followHint, *sessionStatus, *sessionNotice, *updateNotice;
