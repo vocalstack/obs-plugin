@@ -9,14 +9,13 @@ on:
   workflow_run:
     workflows: [Push]
     types: [completed]
+    branches-ignore: [main] # only a version tag's run, which publishes a release
   schedule:
     - cron: '23 6 * * *'
   workflow_dispatch:
 
 jobs:
   check:
-    # After Push: only a version tag's run, which publishes a release.
-    if: github.event_name != 'workflow_run' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch != 'main')
     runs-on: macos-15
     permissions:
       contents: read
