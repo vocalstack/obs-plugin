@@ -154,6 +154,9 @@ jobs:
             security import "$RUNNER_TEMP/installer.p12" -k "$kc" -P "${DEVELOPER_ID_INSTALLER_P12_PASSWORD:-$DEVELOPER_ID_P12_PASSWORD}" -T /usr/bin/codesign -T /usr/bin/productsign
             rm "$RUNNER_TEMP/installer.p12"
           fi
+          # The .p12 files hold only leaf certificates: Apple's Developer ID G2 intermediate completes their chains.
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$kc" -T /usr/bin/codesign -T /usr/bin/productsign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$kp" "$kc" >/dev/null
           security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
           echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
