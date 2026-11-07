@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The newest Apple notarization of this repo's files, and the version it was for.
+"""Apple notarizations of this repo's files: any still pending, any newer refusal, and the last accepted (with its version).
 
     build-aux/notarized.py <file prefix> <owner/repo>
 
@@ -25,10 +25,23 @@ hist = json.loads(subprocess.run(
 mine = [h for h in hist if h["name"].lower().startswith(prefix)]
 if not mine:
     sys.exit(print("no notarization yet"))
-n = mine[0]
 rels = json.loads(subprocess.run(
     ["gh", "release", "list", "-R", repo, "--limit", "50", "--json", "tagName,publishedAt"],
     check=True, capture_output=True, text=True).stdout)
-after = sorted((r for r in rels if r["tagName"] != "latest" and r["publishedAt"] >= n["createdDate"][:19]), key=lambda r: r["publishedAt"])
-version = after[0]["tagName"] if after else "not released"
-print("  ".join([version, n["status"], n["name"], when(n["createdDate"]), n["id"]]))
+
+
+def version(n):
+    if n["status"] != "Accepted":
+        return "-"
+    after = sorted((r for r in rels if r["tagName"] != "latest" and r["publishedAt"] >= n["createdDate"][:19]), key=lambda r: r["publishedAt"])
+    return after[0]["tagName"] if after else "not released"
+
+
+# Whatever is still with Apple, anything newer that Apple refused, then the last accepted.
+accepted = next((h for h in mine if h["status"] == "Accepted"), None)
+pending = [h for h in mine if h["status"] == "In Progress"]
+refused = [h for h in mine if h["status"] not in ("Accepted", "In Progress") and (not accepted or h["createdDate"] > accepted["createdDate"])]
+for label, h in [("pending", h) for h in pending] + [(h["status"].lower(), h) for h in refused] + ([("accepted", accepted)] if accepted else []):
+    print("  ".join([label.ljust(8), version(h).ljust(6), h["name"], when(h["createdDate"]), h["id"]]))
+if not pending:
+    print("nothing waiting on Apple")
