@@ -22,6 +22,7 @@ class QTimer;
 class QBoxLayout;
 class QToolButton;
 class QVBoxLayout;
+class TranscriptPanel;
 class Updater;
 class WarmPing;
 
@@ -53,6 +54,9 @@ public:
 	// right of the main window.
 	void showFirstTime(QMainWindow *mainWindow);
 	void setOverlay(CaptionOverlay *overlay);
+	// The transcript panel's dock: fed by the session, popped out from the
+	// live card.
+	void setTranscriptPanel(TranscriptPanel *panel);
 	// Start when idle, else stop: the dock's button, and the
 	// "VocalStack: Start/Stop transcribing" hotkey.
 	void toggle();
@@ -155,7 +159,8 @@ private:
 	// While live: the card under Stop.
 	QWidget *liveCard;
 	QLabel *liveDot, *liveWord, *liveClock, *liveListeners, *liveStatus;
-	QToolButton *captionsToggle;
+	QToolButton *captionsToggle, *popOutButton;
+	TranscriptPanel *transcriptPanel = nullptr;
 	QTimer *liveTick;
 	QElapsedTimer liveSince;
 	Session::Level liveLevel = Session::Level::Ok;

@@ -55,7 +55,7 @@ QString Theme::stylesheet() const
 {
 	// Alphas are 0–255: 10 ≈ 4 %, 18 ≈ 7 %, 26 ≈ 10 %, 31 ≈ 12 %, 56 ≈ 22 %.
 	QString s = R"(
-QLabel[role="eyebrow"] { color: MUTED; }
+QLabel[role="eyebrow"] { color: rgba(FGRGB,150); }
 QLabel[role="eyebrow"][level="live"] { color: LIVE; }
 QLabel[role="eyebrow"][level="warn"] { color: WARN; }
 QLabel[role="eyebrow"][level="error"] { color: ERROR; }
@@ -256,9 +256,10 @@ Segmented::Segmented(QWidget *parent) : QFrame(parent), group(new QButtonGroup(t
 	setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
 }
 
-void Segmented::addOption(const QString &label, const QVariant &value)
+void Segmented::addOption(const QString &label, const QVariant &value, const QString &tip)
 {
 	auto *b = new QPushButton(label, this);
+	b->setToolTip(tip);
 	b->setCheckable(true);
 	b->setCursor(Qt::PointingHandCursor);
 	b->setProperty("value", value);

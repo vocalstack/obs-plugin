@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "caption-overlay.hpp"
 #include "dock.hpp"
+#include "transcript-panel.hpp"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -93,6 +94,17 @@ bool obs_module_load(void)
 		obs_log(LOG_ERROR, "could not add the VocalStack dock");
 		delete dock;
 		dock = nullptr;
+	}
+	// The live transcript in a dock of its own, to float and move to
+	// another monitor.
+	if (dock) {
+		auto *panel = new TranscriptPanel();
+		if (obs_frontend_add_dock_by_id("vocalstack-transcript", obs_module_text("VocalStack.Transcript"), panel))
+			dock->setTranscriptPanel(panel);
+		else {
+			obs_log(LOG_ERROR, "could not add the VocalStack transcript dock");
+			delete panel;
+		}
 	}
 	obs_frontend_add_event_callback(on_frontend_event, nullptr);
 	toggle_hotkey = obs_hotkey_register_frontend("vocalstack.toggle", obs_module_text("VocalStack.Toggle"),

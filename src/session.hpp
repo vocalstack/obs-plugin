@@ -5,6 +5,7 @@
 #include "websocket.hpp"
 
 #include <QHash>
+#include <QSet>
 #include <QJsonDocument>
 #include <QObject>
 #include <QTimer>
@@ -51,6 +52,16 @@ signals:
 	// speech is not the spoken language set, the plan's cutoff is near)
 	// and errors (VocalStack stopped transcribing). Empty hides them.
 	void notices(const QStringList &warnings, const QStringList &errors);
+	// The running transcript, for the transcript panel: a line added or
+	// rewritten (`id` "r:<seq>" for a row, "s:<id>" for a sentence that
+	// takes its rows' place; `start` in media seconds, -1 to keep its
+	// place), lines taken back, and a new recording starting afresh.
+	void transcriptLine(const QString &id, double start, int speaker, const QString &text);
+	void transcriptRemoved(const QStringList &ids);
+	void transcriptCleared();
+	// What each speaker is called ("Speaker 2", a name), once more than one
+	// has been heard; empty otherwise.
+	void speakerLabels(const QHash<int, QString> &labels);
 	// VocalStack refused the caption language (its limit of languages a
 	// recording, say): captions went back to the spoken language.
 	void captionLanguageRefused(const QString &message);
@@ -116,6 +127,9 @@ private:
 		QString name;
 	};
 	QHash<int, Speaker> speakers;
+	// Rows a sentence has taken in: the panel shows the sentence, not them.
+	QSet<qint64> inSentence;
+	void emitSpeakers();
 	// The wait before a feed is opened again; it doubles while the feed
 	// keeps closing.
 	int resubscribeMs, reopenEventsMs;

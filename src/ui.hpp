@@ -60,7 +60,7 @@ class Segmented : public QFrame {
 
 public:
 	explicit Segmented(QWidget *parent = nullptr);
-	void addOption(const QString &label, const QVariant &value);
+	void addOption(const QString &label, const QVariant &value, const QString &tip = QString());
 	QVariant value() const;
 	void setValue(const QVariant &value);
 

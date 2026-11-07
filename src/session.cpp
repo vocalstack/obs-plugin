@@ -386,6 +386,9 @@ void Session::startRecording(bool takeover)
 			  sentences = false;
 			  resuming = false;
 			  speakers.clear();
+			  inSentence.clear();
+			  emit transcriptCleared();
+			  emitSpeakers();
 			  shownSpeaker = -1;
 			  resubscribeMs = reopenEventsMs = RESUBSCRIBE_MS;
 			  setState(State::Live);
@@ -539,8 +542,13 @@ void Session::onFrame(const QString &text)
 	} else if (type == "transcript.committed") {
 		const QJsonObject seg = f.value("segment").toObject();
 		lastSeq = seg.value("seq").toInteger(lastSeq);
-		// Waiting for the translation keeps the original off the screen.
-		if (!sentences && (lang.isEmpty() || seg.value("translations").toObject().contains(lang)))
+		if (!inSentence.contains(lastSeq))
+			emit transcriptLine(QStringLiteral("r:%1").arg(lastSeq), seg.value("start").toDouble(-1),
+					    speakerOf(seg), seg.value("text").toString());
+		// Shown the moment it is heard, as the dashboard does; the sentence
+		// it belongs to takes its place when it comes. A translated
+		// caption waits for its translation.
+		if (lang.isEmpty() || seg.value("translations").toObject().contains(lang))
 			showCaption(shown(seg, lang), {lastSeq}, speakerOf(seg));
 	} else if (type == "transcript.translated" && !lang.isEmpty()) {
 		const qint64 seq = f.value("seq").toInteger(-1);
@@ -550,20 +558,46 @@ void Session::onFrame(const QString &text)
 		// Sent again as the sentence grows and when its translation comes.
 		sentences = true;
 		const QJsonObject sentence = f.value("sentence").toObject();
-		if (sentence.value("status").toString() == "dropped")
+		const QString id = QStringLiteral("s:%1").arg(sentence.value("sentenceId").toInteger());
+		if (sentence.value("status").toString() == "dropped") {
+			emit transcriptRemoved({id});
 			return;
-		if (lang.isEmpty() || sentence.value("translations").toObject().contains(lang))
-			showCaption(shown(sentence, lang), seqsOf(sentence.value("seqs")), speakerOf(sentence));
+		}
+		const QList<qint64> seqs = seqsOf(sentence.value("seqs"));
+		QStringList rows;
+		for (qint64 q : seqs)
+			if (!inSentence.contains(q)) {
+				inSentence.insert(q);
+				rows.append(QStringLiteral("r:%1").arg(q));
+			}
+		if (!rows.isEmpty())
+			emit transcriptRemoved(rows);
+		emit transcriptLine(id, sentence.value("start").toDouble(-1), speakerOf(sentence),
+				    sentence.value("text").toString());
+		// The caption follows the sentence that holds the newest row; an
+		// older one, finished late, does not pull the caption back.
+		if (seqs.contains(lastSeq) &&
+		    (lang.isEmpty() || sentence.value("translations").toObject().contains(lang)))
+			showCaption(shown(sentence, lang), seqs, speakerOf(sentence));
 	} else if (type == "transcript.amended") {
 		// The row on screen, written again. A translated caption waits for
 		// the amend's own translation (transcript.translated, same seq).
 		const qint64 seq = f.value("seq").toInteger(-1);
+		if (!inSentence.contains(seq))
+			emit transcriptLine(QStringLiteral("r:%1").arg(seq), -1,
+					    f.value("speaker").isDouble() ? f.value("speaker").toInt() : -1,
+					    f.value("text").toString());
 		if (lang.isEmpty() && shownSeqs == QList<qint64>{seq})
 			showCaption(f.value("text").toString(), {seq},
 				    f.value("speaker").isDouble() ? f.value("speaker").toInt() : shownSpeaker);
 	} else if (type == "transcript.corrected") {
-		// Somebody corrected the row on screen in the dashboard.
+		// Somebody corrected a line in the dashboard.
 		const qint64 seq = f.value("seq").toInteger(-1);
+		if (f.value("sentenceId").isDouble() && f.value("sentenceText").isString())
+			emit transcriptLine(QStringLiteral("s:%1").arg(f.value("sentenceId").toInteger()), -1, -1,
+					    f.value("sentenceText").toString());
+		else if (!inSentence.contains(seq))
+			emit transcriptLine(QStringLiteral("r:%1").arg(seq), -1, -1, f.value("text").toString());
 		if (lang.isEmpty() && shownSeqs.contains(seq)) {
 			const QString sentenceText = f.value("sentenceText").toString();
 			showCaption(shownSeqs.size() > 1 && !sentenceText.isEmpty() ? sentenceText
@@ -574,6 +608,10 @@ void Session::onFrame(const QString &text)
 		// Rows taken back (another language than the engine read); the
 		// engine that reads it sends them again.
 		const QList<qint64> seqs = seqsOf(f.value("seqs"));
+		QStringList rows;
+		for (qint64 q : seqs)
+			rows.append(QStringLiteral("r:%1").arg(q));
+		emit transcriptRemoved(rows);
 		if (seqs.contains(lastSeq))
 			lastSeq = -1; // its translation, if late, is not shown either
 		for (qint64 seq : seqs)
@@ -597,10 +635,13 @@ void Session::onFrame(const QString &text)
 			speakers.insert(s.value("speaker").toInt(),
 					{s.value("number").toInt(), s.value("name").toString()});
 		}
+		emitSpeakers();
 	} else if (type == "transcript.speakerNamed") {
 		const int speaker = f.value("speaker").toInt();
-		if (speakers.contains(speaker))
+		if (speakers.contains(speaker)) {
 			speakers[speaker].name = f.value("name").toString();
+			emitSpeakers();
+		}
 	} else if (type == "transcript.languageStatus") {
 		const QString state = f.value("state").toString();
 		if (state == "mismatch" || state == "change_unsupported")
@@ -714,6 +755,14 @@ void Session::onIngest(const QJsonObject &f)
 			    Session::Level::Warn);
 	else if (state == "failed")
 		end(error.isEmpty() ? tr("VocalStack gave up on the stream") : tr("VocalStack gave up on the stream: %1").arg(error));
+}
+
+void Session::emitSpeakers()
+{
+	QHash<int, QString> labels;
+	for (auto it = speakers.cbegin(); it != speakers.cend(); ++it)
+		labels.insert(it.key(), speakerLabel(it.key()));
+	emit speakerLabels(labels);
 }
 
 void Session::showCaption(const QString &words, const QList<qint64> &seqs, int speaker)

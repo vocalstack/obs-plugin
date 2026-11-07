@@ -3,6 +3,7 @@
 #include "api.hpp"
 #include "caption-overlay.hpp"
 #include "connect-login.hpp"
+#include "transcript-panel.hpp"
 #include "ui.hpp"
 #include "updater.hpp"
 #include "warm-ping.hpp"
@@ -425,7 +426,7 @@ QWidget *Dock::buildSignedIn()
 	editBroadcastButton = new QPushButton(tr("Edit"));
 	editBroadcastButton->setProperty("role", "edit");
 	// As tall as the list beside it, whatever OBS's theme makes that.
-	editBroadcastButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+	broadcastBox->installEventFilter(this);
 	connect(editBroadcastButton, &QPushButton::clicked, this, [this]() {
 		openBroadcastEditor(broadcastObjects.contains(settings.broadcastId) ? settings.broadcastId : QString());
 	});
@@ -478,14 +479,13 @@ QWidget *Dock::buildSignedIn()
 
 	sendSwitch = new ui::Segmented;
 	sendSwitch->addOption(tr("Audio only"), false);
-	sendSwitch->addOption(tr("Audio + video"), true);
+	sendSwitch->addOption(tr("Audio + video"), true, tr("Also keeps your video with the recording"));
 	sendSwitch->setValue(settings.sendVideo);
-	auto *sendNote = ui::muted(tr("Audio + video also keeps your video with the recording."));
 	connect(sendSwitch, &ui::Segmented::changed, this, [this](const QVariant &value) {
 		settings.sendVideo = value.toBool();
 		settings.save();
 	});
-	sendBlock = ui::field(v, tr("Send"), sendSwitch, sendNote);
+	sendBlock = ui::field(v, tr("Send"), sendSwitch);
 	sendBlock->layout()->setContentsMargins(0, GAP_FIELD, 0, 0);
 	v->addSpacing(GAP_SECTION);
 
@@ -561,6 +561,13 @@ QWidget *Dock::buildSignedIn()
 	top->addWidget(liveClock);
 	top->addStretch(1);
 	top->addWidget(captionsToggle);
+	popOutButton = ui::linkButton(tr("Transcript ↗"), nullptr, "muted");
+	popOutButton->setToolTip(tr("Show the live transcript in a window you can move to another monitor"));
+	connect(popOutButton, &QToolButton::clicked, this, [this]() {
+		if (transcriptPanel)
+			transcriptPanel->popOut();
+	});
+	top->addWidget(popOutButton);
 	grid->addLayout(top, 0, 0, 1, 2);
 	liveStatus = new QLabel;
 	liveStatus->setWordWrap(true);
@@ -781,6 +788,15 @@ QWidget *Dock::buildSettings()
 void Dock::setOverlay(CaptionOverlay *o)
 {
 	overlay = o;
+}
+
+void Dock::setTranscriptPanel(TranscriptPanel *panel)
+{
+	transcriptPanel = panel;
+	connect(session, &Session::transcriptLine, panel, &TranscriptPanel::setLine);
+	connect(session, &Session::transcriptRemoved, panel, &TranscriptPanel::removeLines);
+	connect(session, &Session::transcriptCleared, panel, &TranscriptPanel::clear);
+	connect(session, &Session::speakerLabels, panel, &TranscriptPanel::setSpeakerLabels);
 }
 
 void Dock::onStatus(const QString &text, Session::Level level)
@@ -1732,6 +1748,12 @@ void Dock::watchClose(QWidget *mainWindow)
 // stream was gone. OBS holds its own close the same way.
 bool Dock::eventFilter(QObject *watched, QEvent *event)
 {
+	// Edit stays exactly as tall as the list beside it.
+	if (watched == broadcastBox) {
+		if (event->type() == QEvent::Resize || event->type() == QEvent::Show)
+			editBroadcastButton->setFixedHeight(broadcastBox->height());
+		return QWidget::eventFilter(watched, event);
+	}
 	if (event->type() != QEvent::Close || session->state() == Session::State::Idle || closeHeld)
 		return QWidget::eventFilter(watched, event);
 	closeHeld = true;

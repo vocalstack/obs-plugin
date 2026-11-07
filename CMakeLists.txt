@@ -57,6 +57,8 @@ target_sources(
     src/session.hpp
     src/settings.cpp
     src/settings.hpp
+    src/transcript-panel.cpp
+    src/transcript-panel.hpp
     src/ui.cpp
     src/ui.hpp
     src/vocalstack-output.cpp
