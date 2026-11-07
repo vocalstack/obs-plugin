@@ -204,7 +204,8 @@ jobs:
           codesign -dvv "$plugin" 2>&1 | grep -E 'Authority=Developer ID Application|flags=.*runtime|Timestamp='
           .github/scripts/notarize.sh "$pkg"
           .github/scripts/staple.sh "$pkg"
-          xcrun stapler validate "$pkg"
+          # Apple's ticket server drops connections now and then: asked again.
+          for i in 1 2 3 4 5; do xcrun stapler validate "$pkg" && break; [ $i = 5 ] && exit 1; sleep $((i * 15)); done
           spctl -a -vv -t install "$pkg"
 
       - name: Upload Artifacts 📡

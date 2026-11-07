@@ -42,6 +42,7 @@
 #include <QVBoxLayout>
 
 #include <cstring>
+#include <algorithm>
 #include <initializer_list>
 
 using ui::GAP_FIELD;
@@ -544,9 +545,14 @@ QWidget *Dock::buildSignedIn()
 	liveDot->setProperty("role", "dot");
 	liveWord = ui::eyebrow(tr("Live"));
 	liveClock = new QLabel;
+	// Digits that do not jitter: tabular figures where Qt has them (6.7),
+	// else room for the widest time.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
 	QFont clockFont = liveClock->font();
-	clockFont.setFeature(QFont::Tag("tnum"), 1); // digits that do not jitter
+	clockFont.setFeature(QFont::Tag("tnum"), 1);
 	liveClock->setFont(clockFont);
+#endif
+	liveClock->setMinimumWidth(liveClock->fontMetrics().horizontalAdvance(QStringLiteral("0:00:00")));
 	captionsToggle = new QToolButton;
 	captionsToggle->setText(QStringLiteral("CC"));
 	captionsToggle->setCheckable(true);

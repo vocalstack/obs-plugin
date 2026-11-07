@@ -13,6 +13,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 // Only the newest lines are drawn; the whole transcript is in VocalStack.
 static const int SHOWN_LINES = 400;
 static const int FONT_MIN = 10, FONT_MAX = 48, FONT_DEFAULT = 18;
