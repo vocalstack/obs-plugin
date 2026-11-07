@@ -144,8 +144,8 @@ ${_usage_host:-}"
 
   local product_name
   local product_version
-  read -r product_name product_version <<< \
-    "$(jq -r '. | {name, version} | join(" ")' ${buildspec_file})"
+  product_name="$(jq -r '.name' ${buildspec_file})"
+  product_version="$(tr -d '[:space:]' < ${project_root}/VERSION)"
 
   local -a cmake_args=()
   if (( _loglevel > 1 )) cmake_args+=(--verbose)

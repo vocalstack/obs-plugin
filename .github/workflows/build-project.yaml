@@ -15,7 +15,6 @@ jobs:
         shell: bash
     outputs:
       package: ${{ steps.setup.outputs.package }}
-      codesign: ${{ steps.setup.outputs.codesign }}
       notarize: ${{ steps.setup.outputs.notarize }}
       config: ${{ steps.setup.outputs.config }}
       commitHash: ${{ steps.setup.outputs.commitHash }}
@@ -34,25 +33,25 @@ jobs:
 
           case "${GITHUB_EVENT_NAME}" in
             pull_request)
-              config_data=('codesign:false' 'notarize:false' 'package:false' 'config:RelWithDebInfo')
+              config_data=('notarize:false' 'package:false' 'config:RelWithDebInfo')
               if gh pr view ${{ github.event.number }} --json labels \
                 | jq -e -r '.labels[] | select(.name == "Seeking Testers")' > /dev/null; then
-                config_data[0]='codesign:true'
-                config_data[2]='package:true'
+                config_data[1]='package:true'
               fi
               ;;
             push)
-              config_data=('codesign:true' 'notarize:false' 'package:true' 'config:RelWithDebInfo')
-              if [[ ${GITHUB_REF_NAME} =~ [0-9]+.[0-9]+.[0-9]+(-(rc|beta).+)? ]]; then
-                config_data[1]='notarize:true'
-                config_data[3]='config:Release'
+              # A version tag is a release: signed with the Developer ID and notarized.
+              config_data=('notarize:false' 'package:true' 'config:RelWithDebInfo')
+              if [[ ${GITHUB_REF_NAME} =~ ^[0-9]+.[0-9]+.[0-9]+(-(rc|beta).+)?$ ]]; then
+                config_data[0]='notarize:true'
+                config_data[2]='config:Release'
               fi
               ;;
             workflow_dispatch)
-              config_data=('codesign:true' 'notarize:false' 'package:false' 'config:RelWithDebInfo')
+              config_data=('notarize:false' 'package:false' 'config:RelWithDebInfo')
               ;;
             schedule)
-              config_data=('codesign:true' 'notarize:false' 'package:true' 'config:RelWithDebInfo')
+              config_data=('notarize:false' 'package:true' 'config:RelWithDebInfo')
               ;;
             *) ;;
           esac
@@ -75,8 +74,9 @@ jobs:
   macos-build:
     name: Build for macOS 🍏
     runs-on: macos-15
-    # A cap, so a hung build cannot run up the bill (macOS bills 10x Linux).
-    timeout-minutes: 30
+    # A cap, so a hung build cannot run up the bill (macOS bills 10x Linux);
+    # Apple's notary service can take a while.
+    timeout-minutes: 60
     needs: check-event
     defaults:
       run:
@@ -107,10 +107,8 @@ jobs:
           if (( #remove_formulas )) brew uninstall --ignore-dependencies ${remove_formulas}
           print '::endgroup::'
 
-          local product_name
-          local product_version
-          read -r product_name product_version <<< \
-            "$(jq -r '. | {name, version} | join(" ")' buildspec.json)"
+          local product_name="$(jq -r '.name' buildspec.json)"
+          local product_version="$(tr -d '[:space:]' < VERSION)"
 
           print "pluginName=${product_name}" >> $GITHUB_OUTPUT
           print "pluginVersion=${product_version}" >> $GITHUB_OUTPUT
@@ -123,27 +121,59 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-
 
-      - name: Set Up Codesigning 🔑
-        uses: ./.github/actions/setup-macos-codesigning
-        if: fromJSON(needs.check-event.outputs.codesign)
+      # A version tag is signed with the Developer ID (ETANOVA ENTERPRISE
+      # SOLUTIONS LIMITED, team P94964SJFA) and notarized, as VocalStack for
+      # Mac is; other builds stay ad hoc. The certificates are the
+      # DEVELOPER_ID_P12 secret (base64 .p12 with the Developer ID Application
+      # certificate, its password DEVELOPER_ID_P12_PASSWORD), and the Developer
+      # ID Installer certificate, which signs the .pkg: in the same .p12, or in
+      # DEVELOPER_ID_INSTALLER_P12 (password DEVELOPER_ID_INSTALLER_P12_PASSWORD),
+      # in a keychain of this run's own. The notary key is an App Store Connect
+      # API key (NOTARY_KEY_P8, base64 .p8; NOTARY_KEY_ID; NOTARY_ISSUER_ID).
+      - name: Developer ID
         id: codesign
-        with:
-          codesignIdentity: ${{ secrets.MACOS_SIGNING_APPLICATION_IDENTITY }}
-          installerIdentity: ${{ secrets.MACOS_SIGNING_INSTALLER_IDENTITY }}
-          codesignCertificate: ${{ secrets.MACOS_SIGNING_CERT }}
-          certificatePassword: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
-          keychainPassword: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
-          provisioningProfile: ${{ secrets.MACOS_SIGNING_PROVISIONING_PROFILE }}
-          notarizationUser: ${{ secrets.MACOS_NOTARIZATION_USERNAME }}
-          notarizationPassword: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
+        if: fromJSON(needs.check-event.outputs.notarize)
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          DEVELOPER_ID_INSTALLER_P12: ${{ secrets.DEVELOPER_ID_INSTALLER_P12 }}
+          DEVELOPER_ID_INSTALLER_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_INSTALLER_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          [ -n "$DEVELOPER_ID_P12" ] && [ -n "$NOTARY_KEY_P8" ] || { echo "::error::DEVELOPER_ID_P12 / NOTARY_KEY_P8 are not set: a release must be signed and notarized"; exit 1; }
+          kc="$RUNNER_TEMP/signing.keychain-db"; kp=$(uuidgen)
+          echo "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
+          security create-keychain -p "$kp" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kp" "$kc"
+          security import "$RUNNER_TEMP/id.p12" -k "$kc" -P "$DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign
+          rm "$RUNNER_TEMP/id.p12"
+          if [ -n "$DEVELOPER_ID_INSTALLER_P12" ]; then
+            echo "$DEVELOPER_ID_INSTALLER_P12" | base64 --decode > "$RUNNER_TEMP/installer.p12"
+            security import "$RUNNER_TEMP/installer.p12" -k "$kc" -P "${DEVELOPER_ID_INSTALLER_P12_PASSWORD:-$DEVELOPER_ID_P12_PASSWORD}" -T /usr/bin/codesign -T /usr/bin/productsign
+            rm "$RUNNER_TEMP/installer.p12"
+          fi
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kp" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          # The identities come from the keychain, so a renewed certificate needs no workflow change.
+          app=$(security find-identity -v -p codesigning "$kc" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
+          installer=$(security find-identity -v "$kc" | sed -n 's/.*"\(Developer ID Installer: .*\)"/\1/p' | head -1)
+          [ -n "$app" ] || { echo "::error::no Developer ID Application certificate in DEVELOPER_ID_P12"; exit 1; }
+          [ -n "$installer" ] || { echo "::error::no Developer ID Installer certificate: the .pkg must be signed with one (export it into DEVELOPER_ID_P12, or set DEVELOPER_ID_INSTALLER_P12)"; exit 1; }
+          echo "codesignIdent=$app" >> "$GITHUB_OUTPUT"
+          echo "installerIdent=$installer" >> "$GITHUB_OUTPUT"
+          echo "codesignTeam=$(echo "$app" | sed -En 's/.+\((.+)\)/\1/p')" >> "$GITHUB_OUTPUT"
 
       - name: Build Plugin 🧱
         uses: ./.github/actions/build-plugin
         with:
           target: macos-universal
           config: ${{ needs.check-event.outputs.config }}
-          codesign: ${{ fromJSON(needs.check-event.outputs.codesign) }}
-          codesignIdent: ${{ steps.codesign.outputs.codesignIdent }}
+          codesign: ${{ fromJSON(needs.check-event.outputs.notarize) }}
+          codesignIdent: ${{ steps.codesign.outputs.codesignIdent || '-' }}
+          codesignTeam: ${{ steps.codesign.outputs.codesignTeam }}
 
       - name: Package Plugin 📀
         uses: ./.github/actions/package-plugin
@@ -151,13 +181,28 @@ jobs:
           target: macos-universal
           config: ${{ needs.check-event.outputs.config }}
           package: ${{ fromJSON(needs.check-event.outputs.package) }}
-          codesign: ${{ fromJSON(needs.check-event.outputs.codesign) && fromJSON(steps.codesign.outputs.haveCodesignIdent) }}
-          codesignIdent: ${{ steps.codesign.outputs.codesignIdent }}
+          codesign: ${{ fromJSON(needs.check-event.outputs.notarize) }}
+          codesignIdent: ${{ steps.codesign.outputs.codesignIdent || '-' }}
           installerIdent: ${{ steps.codesign.outputs.installerIdent }}
           codesignTeam: ${{ steps.codesign.outputs.codesignTeam }}
-          notarize: ${{ fromJSON(needs.check-event.outputs.notarize) && fromJSON(steps.codesign.outputs.haveNotarizationUser) }}
-          codesignUser: ${{ secrets.MACOS_NOTARIZATION_USERNAME }}
-          codesignPass: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
+
+      # Apple checks the installer, then its ticket is stapled to it, so it
+      # opens with no "can't be checked" warning even offline.
+      - name: Notarize the installer
+        if: fromJSON(needs.check-event.outputs.notarize)
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          pkg=release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal.pkg
+          plugin=release/${{ needs.check-event.outputs.config }}/${{ steps.setup.outputs.pluginName }}.plugin
+          codesign --verify --deep --strict --verbose=2 "$plugin"
+          codesign -dvv "$plugin" 2>&1 | grep -E 'Authority=Developer ID Application|flags=.*runtime|Timestamp='
+          .github/scripts/notarize.sh "$pkg"
+          .github/scripts/staple.sh "$pkg"
+          xcrun stapler validate "$pkg"
+          spctl -a -vv -t install "$pkg"
 
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@v4
@@ -201,8 +246,8 @@ jobs:
           : Set Up Environment 🔧
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
 
-          read -r product_name product_version <<< \
-            "$(jq -r '. | {name, version} | join(" ")' buildspec.json)"
+          product_name="$(jq -r '.name' buildspec.json)"
+          product_version="$(tr -d '[:space:]' < VERSION)"
 
           echo "pluginName=${product_name}" >> $GITHUB_OUTPUT
           echo "pluginVersion=${product_version}" >> $GITHUB_OUTPUT
@@ -277,7 +322,7 @@ jobs:
 
           $BuildSpec = Get-Content -Path buildspec.json -Raw | ConvertFrom-Json
           $ProductName = $BuildSpec.name
-          $ProductVersion = $BuildSpec.version
+          $ProductVersion = (Get-Content -Path VERSION -Raw).Trim()
 
           "pluginName=${ProductName}" >> $env:GITHUB_OUTPUT
           "pluginVersion=${ProductVersion}" >> $env:GITHUB_OUTPUT

@@ -8,6 +8,7 @@ on:
       - 'release/**'
     tags:
       - '*'
+      - '!latest' # latest is moved by a release, below
 permissions:
   contents: write
 # A newer push to the same branch cancels the run it replaces.
@@ -57,8 +58,18 @@ jobs:
         if: fromJSON(steps.check.outputs.validTag)
         with:
           path: repo
-          sparse-checkout: .github/release-notes.md
+          sparse-checkout: |
+            .github/release-notes.md
+            VERSION
           sparse-checkout-cone-mode: false
+
+      # The tag is the version: VERSION is bumped and committed, then the same
+      # version tagged and pushed (as VocalStack for Mac).
+      - name: Check VERSION ☑️
+        if: fromJSON(steps.check.outputs.validTag)
+        run: |
+          version="$(tr -d '[:space:]' < repo/VERSION)"
+          [ "${GITHUB_REF_NAME}" = "${version}" ] || { echo "::error::tag ${GITHUB_REF_NAME} does not match VERSION ${version}"; exit 1; }
 
       - name: Download Build Artifacts 📥
         uses: actions/download-artifact@v4
@@ -128,3 +139,27 @@ jobs:
             ${{ github.workspace }}/vocalstack-obs-macos.pkg
             ${{ github.workspace }}/vocalstack-obs-linux-x86_64.deb
             ${{ github.workspace }}/vocalstack-obs-source.tar.xz
+
+      # The `latest` release follows each version, so its links never change
+      # (the website's downloads come from it):
+      #   https://github.com/vocalstack/obs-plugin/releases/download/latest/vocalstack-obs-macos.pkg
+      - name: Refresh the latest release
+        if: fromJSON(steps.check.outputs.validTag) && !fromJSON(steps.check.outputs.prerelease)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          files=(vocalstack-obs-windows-x64.zip vocalstack-obs-macos.pkg vocalstack-obs-linux-x86_64.deb vocalstack-obs-source.tar.xz)
+          notes="VocalStack for OBS $tag (built from ${GITHUB_SHA::12}). Moves to each new version."
+          # GitHub's release API answers a 5xx now and then: try each call a few times.
+          retry() { for i in 1 2 3 4; do "$@" && return 0; echo "retry $i: $*"; sleep $((i * 10)); done; "$@"; }
+          if gh release view latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Move the tag, then swap the files in place: the links stay the same.
+            retry gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            retry gh release upload latest "${files[@]}" -R "$GITHUB_REPOSITORY" --clobber
+            retry gh release edit latest -R "$GITHUB_REPOSITORY" --title "VocalStack for OBS $tag (latest)" --notes "$notes" --latest=false
+          else
+            gh release create latest "${files[@]}" -R "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --latest=false --title "VocalStack for OBS $tag (latest)" --notes "$notes"
+          fi

@@ -49,7 +49,9 @@ string(JSON _name GET ${buildspec} name)
 string(JSON _website GET ${buildspec} website)
 string(JSON _author GET ${buildspec} author)
 string(JSON _email GET ${buildspec} email)
-string(JSON _version GET ${buildspec} version)
+# The version is the VERSION file (a release tag equals it), as in VocalStack for Mac.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" _version)
+string(STRIP "${_version}" _version)
 string(JSON _bundleId GET ${buildspec} platformConfig macos bundleId)
 
 set(PLUGIN_AUTHOR ${_author})

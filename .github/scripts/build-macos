@@ -90,8 +90,8 @@ build() {
 
   local product_name
   local product_version
-  read -r product_name product_version <<< \
-    "$(jq -r '. | {name, version} | join(" ")' ${buildspec_file})"
+  product_name="$(jq -r '.name' ${buildspec_file})"
+  product_version="$(tr -d '[:space:]' < ${project_root}/VERSION)"
 
   pushd ${project_root}
 
