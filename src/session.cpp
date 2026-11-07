@@ -236,8 +236,10 @@ QJsonObject Session::recordingSettings() const
 		{"spokenLanguage", settings->spokenLanguage.isEmpty() ? QJsonValue() : QJsonValue(settings->spokenLanguage)},
 		{"speakerLabels", settings->speakerLabels.isEmpty() ? "auto" : settings->speakerLabels},
 		{"latencyMode", settings->latencyMode.isEmpty() ? "auto" : settings->latencyMode},
-		{"summary", settings->aiSummary},
-		{"title", settings->aiSummary},
+		// The language model's title and summary of each recording: on,
+		// as the dashboard has it (VocalStack's own default is off).
+		{"summary", true},
+		{"title", true},
 	};
 	if (settings->maxDurationS > 0)
 		s.insert("maxDurationS", settings->maxDurationS);

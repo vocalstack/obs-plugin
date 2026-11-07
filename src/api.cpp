@@ -8,6 +8,8 @@
 #include <QPointer>
 #include <QTimer>
 
+#include <cstdio>
+
 // The longest Retry-After waited for before giving the error back.
 static const int RETRY_MAX_S = 15;
 
@@ -109,6 +111,44 @@ void Api::getUrl(const QString &url, Done done)
 	r.url = url;
 	r.withKey = false;
 	send(std::move(r), std::move(done));
+}
+
+static size_t to_file(char *data, size_t size, size_t n, void *into)
+{
+	return fwrite(data, size, n, static_cast<FILE *>(into));
+}
+
+void Api::download(const QString &url, const QString &path, Saved done)
+{
+	FILE *file = fopen(path.toUtf8().constData(), "wb");
+	if (!file) {
+		done(0, tr("Could not write %1").arg(path));
+		return;
+	}
+	CURL *easy = curl_easy_init();
+	curl_easy_setopt(easy, CURLOPT_URL, url.toUtf8().constData());
+	curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
+	curl_easy_setopt(easy, CURLOPT_MAXREDIRS, 10L);
+	curl_easy_setopt(easy, CURLOPT_USERAGENT, (QByteArray("vocalstack-obs/") + PLUGIN_VERSION).constData());
+	curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, 10 * 60 * 1000L);
+	curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
+	curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, to_file);
+	curl_easy_setopt(easy, CURLOPT_WRITEDATA, file);
+	QPointer<Api> self(this);
+	Net::instance().add(easy, [self, easy, file, done = std::move(done)](CURLcode result) {
+		long status = 0;
+		curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+		curl_easy_cleanup(easy);
+		fclose(file);
+		if (!self)
+			return;
+		if (result != CURLE_OK)
+			done(0, QString::fromUtf8(curl_easy_strerror(result)));
+		else if (status >= 400)
+			done(int(status), tr("The download answered %1").arg(status));
+		else
+			done(int(status), QString());
+	});
 }
 
 QString Api::errorCode(const QJsonDocument &body)

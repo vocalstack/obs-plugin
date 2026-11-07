@@ -16,6 +16,11 @@ Read more about the [VocalStack live transcription plugin for OBS Studio](https:
 - The plugin sends OBS's audio (or audio and video) to VocalStack over its own connection, so the stream
   your viewers see is untouched. Transcriptions are saved in your VocalStack account; the dock opens them
   in VocalStack, copies a share link, and copies the broadcast's link (with how many are listening).
+- **Updates install themselves**: when a newer release is out and nothing is being transcribed, the
+  plugin installs it (macOS: the same signed package, into your Library; Linux: the .deb, after the
+  desktop's password prompt; Windows: the zip, copied in when OBS quits) and asks for an OBS restart.
+  Turn that off in the dock and an **Update now** button appears instead. A version a minor behind is
+  marked old; one a major behind no longer starts.
 - **Captions** over the preview name the speaker once more than one has been heard, follow corrections
   made in the dashboard, and fall back to the spoken language when VocalStack refuses a translation (a
   recording has at most ten languages).
@@ -75,8 +80,9 @@ The plugin sends nothing until you sign in. When you start transcribing it sends
 audio and video, if you choose) to VocalStack, and nowhere else, to transcribe it into your VocalStack account;
 see the [VocalStack Privacy Policy](https://vocalstack.com/privacy/). While signed in it also asks VocalStack
 who the key is, the plan's limits, your broadcasts and languages, and follows the transcription's own event
-feed while live. Signing out stops it and removes the plugin's stream key. Once you are signed in, it also asks GitHub once each time OBS starts whether a
-newer release of the plugin is out; that request carries only the plugin's version.
+feed while live. Signing out stops it and removes the plugin's stream key. Once you are signed in, it also asks GitHub every six hours whether a newer
+release of the plugin is out, and downloads it from there to install it; those requests carry only the
+plugin's version.
 
 ## Licence
 

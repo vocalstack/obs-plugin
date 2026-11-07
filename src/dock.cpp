@@ -3,9 +3,11 @@
 #include "api.hpp"
 #include "caption-overlay.hpp"
 #include "connect-login.hpp"
+#include "updater.hpp"
 #include "warm-ping.hpp"
 
 #include <obs-frontend-api.h>
+#include <obs-module.h>
 #include <plugin-support.h>
 
 #include <QCheckBox>
@@ -25,6 +27,7 @@
 #include <QRegularExpression>
 #include <QUrl>
 #include <QMainWindow>
+#include <QPixmap>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QTimer>
@@ -36,20 +39,23 @@
 // Caption box choices that are not a language.
 static const char *CAPTIONS_OFF = "off";
 
-// The plugin's releases (a version tag, `1.2.3`, publishes one).
-static const char *LATEST_RELEASE_API = "https://api.github.com/repos/vocalstack/obs-plugin/releases/latest";
 static const char *LATEST_RELEASE_PAGE = "https://github.com/vocalstack/obs-plugin/releases/latest";
 
-// Whether version `a` is newer than `b` (`1.2.3`, numbers compared).
-static bool newer(const QString &a, const QString &b)
+// The VocalStack logo, at 2x for sharp screens: white on OBS's dark themes,
+// the dark one on a light theme.
+static QLabel *logo(QWidget *parent)
 {
-	const QStringList x = a.split('.'), y = b.split('.');
-	for (qsizetype i = 0; i < qMax(x.size(), y.size()); i++) {
-		const int p = x.value(i).toInt(), q = y.value(i).toInt();
-		if (p != q)
-			return p > q;
+	const bool dark = parent->palette().window().color().lightness() < 128;
+	char *path = obs_module_file(dark ? "logo-white@2x.png" : "logo@2x.png");
+	QPixmap pm(QString::fromUtf8(path ? path : ""));
+	bfree(path);
+	auto *label = new QLabel(parent);
+	if (!pm.isNull()) {
+		pm.setDevicePixelRatio(2);
+		label->setPixmap(pm);
 	}
-	return false;
+	label->setToolTip(QStringLiteral("VocalStack"));
+	return label;
 }
 
 Dock::Dock(QWidget *parent)
@@ -58,16 +64,30 @@ Dock::Dock(QWidget *parent)
 	  settings(Settings::load()),
 	  session(new Session(api, &settings, this)),
 	  login(new ConnectLogin(api, this)),
+	  updater(new Updater(api, this)),
 	  pages(new QStackedWidget(this))
 {
 	auto *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(8, 8, 8, 8);
+	auto *head = new QHBoxLayout;
+	head->addWidget(logo(this));
+	head->addStretch(1);
+	layout->addLayout(head);
+	// A newer release: what it is and how it is going, and the button that
+	// installs it when it is not installed by itself.
+	auto *updateRow = new QHBoxLayout;
 	updateNotice = new QLabel;
 	updateNotice->setWordWrap(true);
 	updateNotice->setTextFormat(Qt::RichText);
 	updateNotice->setOpenExternalLinks(true);
 	updateNotice->hide();
-	layout->addWidget(updateNotice);
+	updateButton = new QPushButton(tr("Update now"));
+	updateButton->hide();
+	connect(updateButton, &QPushButton::clicked, this, [this]() { updater->install(); });
+	updateRow->addWidget(updateNotice, 1);
+	updateRow->addWidget(updateButton);
+	layout->addLayout(updateRow);
+	connect(updater, &Updater::changed, this, &Dock::showUpdate);
 	layout->addWidget(pages, 1);
 	// Which build this is, at the foot of the dock.
 	auto *version = new QLabel(tr("VocalStack for OBS %1").arg(PLUGIN_VERSION));
@@ -196,16 +216,6 @@ QWidget *Dock::buildSignedIn()
 	auto *v = new QVBoxLayout(page);
 	v->setContentsMargins(0, 0, 0, 0);
 
-	auto *top = new QHBoxLayout;
-	accountLabel = new QLabel;
-	accountLabel->setWordWrap(true);
-	auto *signOutButton = new QToolButton;
-	signOutButton->setText(tr("Sign out"));
-	connect(signOutButton, &QToolButton::clicked, this, [this]() { signOut(QString()); });
-	top->addWidget(accountLabel, 1);
-	top->addWidget(signOutButton);
-	v->addLayout(top);
-
 	auto *form = new QFormLayout;
 	form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
@@ -235,20 +245,23 @@ QWidget *Dock::buildSignedIn()
 	copyBroadcastButton->setText(tr("Copy link"));
 	copyBroadcastButton->setToolTip(tr("Copy the broadcast's link, for listeners"));
 	connect(copyBroadcastButton, &QToolButton::clicked, this, &Dock::copyBroadcastLink);
-	broadcastRow->addWidget(broadcastBox, 1);
-	broadcastRow->addWidget(add);
-	broadcastRow->addWidget(refresh);
-	broadcastRow->addWidget(copyBroadcastButton);
-	form->addRow(tr("Broadcast"), broadcastRow);
-	connect(broadcastBox, &QComboBox::activated, this, [this]() {
-		settings.broadcastId = broadcastBox->currentData().toString();
-		settings.save();
-		updateLinks();
-	});
+	form->addRow(tr("Broadcast"), broadcastBox);
+	// Its buttons on the line under it, with who is listening.
 	listenersLabel = new QLabel;
 	listenersLabel->setStyleSheet("color: #8b8b96;");
 	listenersLabel->hide();
-	form->addRow(QString(), listenersLabel);
+	broadcastRow->addWidget(add);
+	broadcastRow->addWidget(refresh);
+	broadcastRow->addWidget(copyBroadcastButton);
+	broadcastRow->addStretch(1);
+	broadcastRow->addWidget(listenersLabel);
+	form->addRow(QString(), broadcastRow);
+	connect(broadcastBox, &QComboBox::activated, this, [this]() {
+		settings.broadcastId = broadcastBox->currentData().toString();
+		settings.save();
+		applyBroadcastDefaults(settings.broadcastId);
+		updateLinks();
+	});
 
 	spokenBox = new QComboBox;
 	form->addRow(tr("Spoken language"), spokenBox);
@@ -307,14 +320,6 @@ QWidget *Dock::buildSignedIn()
 	});
 	v->addLayout(form);
 
-	aiBox = new QCheckBox(tr("AI title and summary of each recording"));
-	aiBox->setChecked(settings.aiSummary);
-	connect(aiBox, &QCheckBox::toggled, this, [this](bool on) {
-		settings.aiSummary = on;
-		settings.save();
-	});
-	v->addWidget(aiBox);
-
 	lockBox = new QCheckBox(tr("Lock the transcription against deletion"));
 	lockBox->setChecked(settings.locked);
 	connect(lockBox, &QCheckBox::toggled, this, [this](bool on) {
@@ -331,6 +336,16 @@ QWidget *Dock::buildSignedIn()
 		updateFollowHint();
 	});
 	v->addWidget(followBox);
+
+	autoUpdateBox = new QCheckBox(tr("Install updates automatically"));
+	autoUpdateBox->setToolTip(tr("A newer release is installed while nothing is being transcribed; restart OBS to use it"));
+	autoUpdateBox->setChecked(settings.autoUpdate);
+	connect(autoUpdateBox, &QCheckBox::toggled, this, [this](bool on) {
+		settings.autoUpdate = on;
+		settings.save();
+		showUpdate();
+	});
+	v->addWidget(autoUpdateBox);
 
 	startButton = new QPushButton(tr("Start transcribing"));
 	startButton->setMinimumHeight(32);
@@ -378,7 +393,86 @@ QWidget *Dock::buildSignedIn()
 	v->addLayout(links);
 	updateLinks();
 	v->addStretch(1);
+
+	// Who is signed in, at the foot.
+	auto *account = new QHBoxLayout;
+	accountLabel = new QLabel;
+	accountLabel->setWordWrap(true);
+	auto *signOutButton = new QToolButton;
+	signOutButton->setText(tr("Sign out"));
+	connect(signOutButton, &QToolButton::clicked, this, [this]() { signOut(QString()); });
+	account->addWidget(accountLabel, 1);
+	account->addWidget(signOutButton);
+	v->addLayout(account);
 	return page;
+}
+
+// The broadcast's own spoken language, speaker labels and transcription
+// mode, as set in VocalStack, become the dock's. "None" changes nothing.
+void Dock::applyBroadcastDefaults(const QString &id)
+{
+	if (id.isEmpty() || !broadcastSettings.contains(id))
+		return;
+	const QJsonObject s = broadcastSettings.value(id);
+	const QString lang = s.value("spokenLanguage").toString();
+	const bool langChanged = lang != settings.spokenLanguage;
+	settings.spokenLanguage = lang;
+	if (s.value("speakerLabels").isString())
+		settings.speakerLabels = s.value("speakerLabels").toString();
+	if (s.value("latencyMode").isString())
+		settings.latencyMode = s.value("latencyMode").toString();
+	settings.save();
+	spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(settings.spokenLanguage)));
+	speakersBox->setCurrentIndex(qMax(0, speakersBox->findData(settings.speakerLabels)));
+	latencyBox->setCurrentIndex(qMax(0, latencyBox->findData(settings.latencyMode)));
+	if (langChanged)
+		warm->languageChanged();
+}
+
+// The update row: a newer release, how old this one is, and where the
+// install stands. With automatic updates on, a newer release is installed
+// as soon as nothing is being transcribed.
+void Dock::showUpdate()
+{
+	const Updater::Age age = updater->age();
+	const Updater::Step step = updater->step();
+	const QString latest = updater->latest();
+	QString text = updater->message();
+	bool problem = updater->problem();
+	const bool pending = age != Updater::Age::Current && step == Updater::Step::Idle;
+	if (pending && settings.autoUpdate && !settings.apiKey.isEmpty() && session->state() == Session::State::Idle &&
+	    !problem) {
+		updater->install(); // says how it goes through changed()
+		return;
+	}
+	if (text.isEmpty() && pending) {
+		switch (age) {
+		case Updater::Age::Available:
+			text = tr("VocalStack for OBS %1 is out (you have %2).").arg(latest, PLUGIN_VERSION);
+			break;
+		case Updater::Age::Deprecated:
+			text = tr("VocalStack for OBS %1 is out; this version (%2) is old and misses newer features.")
+				       .arg(latest, PLUGIN_VERSION);
+			problem = true;
+			break;
+		case Updater::Age::Unsupported:
+			text = tr("VocalStack for OBS %1 is out; this version (%2) is no longer supported. Update to transcribe.")
+				       .arg(latest, PLUGIN_VERSION);
+			problem = true;
+			break;
+		case Updater::Age::Current:
+			break;
+		}
+		text += QStringLiteral(" <a href=\"%1\">Release notes</a>").arg(LATEST_RELEASE_PAGE);
+	}
+	updateNotice->setText(text);
+	updateNotice->setStyleSheet(problem ? "color: #f0a63a;" : "");
+	updateNotice->setVisible(!text.isEmpty());
+	updateButton->setVisible(pending);
+	updateButton->setEnabled(pending);
+	// An unsupported version does not start.
+	const bool blocked = age == Updater::Age::Unsupported && step != Updater::Step::Installed;
+	startButton->setEnabled(!blocked && session->state() != Session::State::Stopping);
 }
 
 // The link buttons follow whether there is a transcription or a broadcast
@@ -459,27 +553,9 @@ void Dock::showSignedIn(bool in)
 	loadBroadcasts();
 	session->refreshLimits();
 	updateLinks();
-	checkForUpdate();
-}
-
-// Once an OBS run, when signed in (nothing is sent before): whether GitHub
-// has a newer release of the plugin. Errors are ignored.
-void Dock::checkForUpdate()
-{
-	if (updateChecked)
-		return;
-	updateChecked = true;
-	api->getUrl(LATEST_RELEASE_API, [this](int, const QJsonDocument &doc, const QString &error) {
-		const QString tag = doc.object().value("tag_name").toString();
-		static const QRegularExpression version("^\\d+(\\.\\d+)*$");
-		if (!error.isEmpty() || !version.match(tag).hasMatch() || !newer(tag, PLUGIN_VERSION))
-			return;
-		obs_log(LOG_INFO, "VocalStack for OBS %s is out (this is %s)", tag.toUtf8().constData(),
-			PLUGIN_VERSION);
-		updateNotice->setText(tr("VocalStack for OBS %1 is out (you have %2). <a href=\"%3\">Download it</a>")
-					      .arg(tag, PLUGIN_VERSION, LATEST_RELEASE_PAGE));
-		updateNotice->show();
-	});
+	// When signed in (nothing is sent before): whether a newer release is
+	// out, now and every 6 hours.
+	updater->check();
 }
 
 void Dock::signedIn(const QString &key, const QString &account)
@@ -542,9 +618,10 @@ void Dock::signOut(const QString &why)
 	settings.followObs = kept.followObs;
 	settings.speakerLabels = kept.speakerLabels;
 	settings.latencyMode = kept.latencyMode;
-	settings.aiSummary = kept.aiSummary;
+	settings.autoUpdate = kept.autoUpdate;
 	settings.transcriptionName = kept.transcriptionName;
 	broadcastLinks.clear();
+	broadcastSettings.clear();
 	settings.save();
 	warm->refresh(); // canStart false while the key still works
 	api->setKey(QString());
@@ -596,12 +673,14 @@ void Dock::loadBroadcasts()
 			return;
 		}
 		broadcastLinks.clear();
+		broadcastSettings.clear();
 		for (const QJsonValue v : doc.object().value("broadcasts").toArray()) {
 			const QJsonObject b = v.toObject();
 			if (b.value("archivedAt").isString() || b.value("lifecycle").toString() == "archived")
 				continue;
 			broadcastBox->addItem(b.value("name").toString(), b.value("id").toString());
 			broadcastLinks.insert(b.value("id").toString(), b.value("shareUrl").toString());
+			broadcastSettings.insert(b.value("id").toString(), b.value("settings").toObject());
 		}
 		const int at = broadcastBox->findData(settings.broadcastId);
 		broadcastBox->setCurrentIndex(qMax(0, at));
@@ -642,9 +721,10 @@ void Dock::onState(Session::State s)
 	startButton->setEnabled(s != Session::State::Stopping);
 	updateFollowHint();
 	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, spokenBox, sendBox, nameEdit, speakersBox,
-							  latencyBox, aiBox, lockBox})
+							  latencyBox, lockBox})
 		w->setEnabled(idle);
 	updateLinks();
+	showUpdate(); // idle again: an update waiting may install
 	// Starting: canStart false; back to idle: true again if still in use.
 	warm->refresh();
 }
@@ -685,6 +765,7 @@ void Dock::updateFollowHint()
 
 void Dock::shutdown()
 {
+	updater->finishOnExit();
 	warm->end();
 	login->cancel();
 	session->stop();

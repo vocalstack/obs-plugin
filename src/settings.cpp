@@ -25,6 +25,7 @@ Settings Settings::load()
 		return s;
 	obs_data_set_default_bool(d, "followObs", true);
 	obs_data_set_default_bool(d, "showCaptions", true);
+	obs_data_set_default_bool(d, "autoUpdate", true);
 	obs_data_set_default_string(d, "speakerLabels", "auto");
 	obs_data_set_default_string(d, "latencyMode", "auto");
 	s.apiKey = str(d, "apiKey");
@@ -40,11 +41,11 @@ Settings Settings::load()
 	s.transcriptionName = str(d, "transcriptionName");
 	s.speakerLabels = str(d, "speakerLabels");
 	s.latencyMode = str(d, "latencyMode");
-	s.aiSummary = obs_data_get_bool(d, "aiSummary");
 	s.locked = obs_data_get_bool(d, "locked");
 	s.maxDurationS = int(obs_data_get_int(d, "maxDurationS"));
 	s.sendVideo = obs_data_get_bool(d, "sendVideo");
 	s.followObs = obs_data_get_bool(d, "followObs");
+	s.autoUpdate = obs_data_get_bool(d, "autoUpdate");
 	s.showCaptions = obs_data_get_bool(d, "showCaptions");
 	s.dockShown = obs_data_get_bool(d, "dockShown");
 	return s;
@@ -70,11 +71,11 @@ void Settings::save() const
 	set("transcriptionName", transcriptionName);
 	set("speakerLabels", speakerLabels);
 	set("latencyMode", latencyMode);
-	obs_data_set_bool(d, "aiSummary", aiSummary);
 	obs_data_set_bool(d, "locked", locked);
 	obs_data_set_int(d, "maxDurationS", maxDurationS);
 	obs_data_set_bool(d, "sendVideo", sendVideo);
 	obs_data_set_bool(d, "followObs", followObs);
+	obs_data_set_bool(d, "autoUpdate", autoUpdate);
 	obs_data_set_bool(d, "showCaptions", showCaptions);
 	obs_data_set_bool(d, "dockShown", dockShown);
 	obs_data_save_json_safe(d, path().toUtf8().constData(), "tmp", "bak");

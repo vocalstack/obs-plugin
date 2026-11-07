@@ -24,8 +24,6 @@ struct Settings {
 	// speaker labels (auto, on, off), latency mode (auto, fast, accuracy).
 	QString speakerLabels = "auto";
 	QString latencyMode = "auto";
-	// The language model's title and summary of each recording (opt-in).
-	bool aiSummary = false;
 	// The transcription cannot be archived in VocalStack while locked.
 	bool locked = false;
 	// The longest live recording the plan allows, in seconds, as
@@ -33,6 +31,9 @@ struct Settings {
 	int maxDurationS = 0;
 	bool sendVideo = false;
 	bool followObs = true;
+	// Install a newer release when one is out and nothing is being
+	// transcribed (else the dock offers it).
+	bool autoUpdate = true;
 	bool showCaptions = true;
 	// The dock was put on screen once; after that OBS keeps where it is.
 	bool dockShown = false;

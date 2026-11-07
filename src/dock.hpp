@@ -4,6 +4,7 @@
 #include "settings.hpp"
 
 #include <QHash>
+#include <QJsonObject>
 #include <QWidget>
 
 class Api;
@@ -17,6 +18,7 @@ class QMainWindow;
 class QPushButton;
 class QStackedWidget;
 class QToolButton;
+class Updater;
 class WarmPing;
 
 // The VocalStack dock: sign-in, then what to send and where, Start/Stop,
@@ -65,7 +67,9 @@ private:
 	void setStatus(QLabel *label, const QString &text, bool error);
 	void updateFollowHint();
 	void updateLinks();
-	void checkForUpdate();
+	void showUpdate();
+	// A broadcast was chosen: its capture settings become the dock's.
+	void applyBroadcastDefaults(const QString &id);
 
 	Api *api;
 	Settings settings;
@@ -73,10 +77,11 @@ private:
 	ConnectLogin *login;
 	CaptionOverlay *overlay = nullptr;
 	WarmPing *warm = nullptr;
+	Updater *updater;
 	bool closeHeld = false;
-	bool updateChecked = false;
-	// Each broadcast's link, by id, from the last load.
+	// Each broadcast's link and capture settings, by id, from the last load.
 	QHash<QString, QString> broadcastLinks;
+	QHash<QString, QJsonObject> broadcastSettings;
 
 	QStackedWidget *pages;
 	// Signed out.
@@ -87,9 +92,9 @@ private:
 	QLabel *accountLabel;
 	QComboBox *broadcastBox, *spokenBox, *captionBox, *sendBox, *speakersBox, *latencyBox;
 	QLineEdit *nameEdit;
-	QCheckBox *followBox, *aiBox, *lockBox;
+	QCheckBox *followBox, *lockBox, *autoUpdateBox;
 	QToolButton *copyBroadcastButton, *copyLinkButton, *openButton;
 	QLabel *listenersLabel, *limitHint;
-	QPushButton *startButton;
+	QPushButton *startButton, *updateButton;
 	QLabel *followHint, *sessionStatus, *sessionNotice, *updateNotice;
 };

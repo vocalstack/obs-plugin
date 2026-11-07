@@ -43,6 +43,10 @@ public:
 	// A GET of another site's JSON at `url`, without the key (GitHub's
 	// releases, for the update check).
 	void getUrl(const QString &url, Done done);
+	// A GET of `url` (redirects followed, no key) saved to `path`; `done`
+	// gets the HTTP status and an error, or none.
+	using Saved = std::function<void(int status, const QString &error)>;
+	void download(const QString &url, const QString &path, Saved done);
 
 	// The API's error code of a failed call's body (`insufficient_credit`,
 	// `not_found`…), empty when the body is not the API's.
