@@ -48,6 +48,7 @@ Settings Settings::load()
 	s.autoUpdate = obs_data_get_bool(d, "autoUpdate");
 	s.showCaptions = obs_data_get_bool(d, "showCaptions");
 	s.dockShown = obs_data_get_bool(d, "dockShown");
+	s.captionBackground = str(d, "captionBackground");
 	return s;
 }
 
@@ -78,5 +79,6 @@ void Settings::save() const
 	obs_data_set_bool(d, "autoUpdate", autoUpdate);
 	obs_data_set_bool(d, "showCaptions", showCaptions);
 	obs_data_set_bool(d, "dockShown", dockShown);
+	set("captionBackground", captionBackground);
 	obs_data_save_json_safe(d, path().toUtf8().constData(), "tmp", "bak");
 }

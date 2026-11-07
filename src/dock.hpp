@@ -189,6 +189,8 @@ private:
 	QPushButton *checkUpdatesButton;
 	QLabel *checkUpdatesResult, *settingsAccount, *settingsLiveNote;
 	QPushButton *signOutButton;
+	QToolButton *captionColorButton, *captionColorReset;
+	void showCaptionColor();
 	QLabel *signOutNote;
 	// "Check for updates" was clicked: its answer shows under it.
 	bool checkWanted = false;

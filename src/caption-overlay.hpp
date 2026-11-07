@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QPointer>
 #include <QWidget>
 
@@ -19,6 +20,8 @@ public:
 	// `speaker` ("Speaker 2", a name) leads the words in brand blue; empty
 	// words clear the caption.
 	void setCaption(const QString &speaker, const QString &text);
+	// The caption box's colour; invalid: VocalStack navy at 75 %.
+	void setBackground(const QColor &color);
 
 protected:
 	bool eventFilter(QObject *watched, QEvent *event) override;
@@ -30,4 +33,5 @@ private:
 
 	QPointer<QWidget> preview;
 	QString speaker, caption;
+	QColor background;
 };

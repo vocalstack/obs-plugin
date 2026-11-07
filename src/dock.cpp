@@ -13,6 +13,7 @@
 #include <plugin-support.h>
 
 #include <QClipboard>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -737,6 +738,37 @@ QWidget *Dock::buildSettings()
 	spBlock->addWidget(ui::muted(tr("Follows the broadcast's default until you change it here.")));
 	sp->addLayoutRow(spBlock);
 
+	// Captions over the preview.
+	auto *cc = section(tr("Captions"));
+	auto *colorControls = new QWidget;
+	auto *colorRow = new QHBoxLayout(colorControls);
+	colorRow->setContentsMargins(0, 0, 0, 0);
+	colorRow->setSpacing(6);
+	captionColorReset = ui::linkButton(tr("Reset"), nullptr, "muted");
+	connect(captionColorReset, &QToolButton::clicked, this, [this]() {
+		settings.captionBackground.clear();
+		settings.save();
+		showCaptionColor();
+	});
+	captionColorButton = new QToolButton;
+	captionColorButton->setFixedSize(44, 26);
+	captionColorButton->setCursor(Qt::PointingHandCursor);
+	connect(captionColorButton, &QToolButton::clicked, this, [this]() {
+		const QColor was = settings.captionBackground.isEmpty() ? QColor(10, 12, 41, 190)
+								       : QColor(settings.captionBackground);
+		const QColor c = QColorDialog::getColor(was, this, tr("Caption background"), QColorDialog::ShowAlphaChannel);
+		if (!c.isValid())
+			return;
+		settings.captionBackground = c.name(QColor::HexArgb);
+		settings.save();
+		showCaptionColor();
+	});
+	colorRow->addWidget(captionColorReset);
+	colorRow->addWidget(captionColorButton);
+	cc->addRow(ui::settingRow(tr("Background"), tr("The box behind the captions over the preview. Lower its opacity to see more of the scene."),
+				  colorControls));
+	showCaptionColor();
+
 	// Behaviour.
 	auto *be = section(tr("Behaviour"));
 	followBox = new ui::Switch;
@@ -798,6 +830,25 @@ QWidget *Dock::buildSettings()
 void Dock::setOverlay(CaptionOverlay *o)
 {
 	overlay = o;
+	if (overlay)
+		overlay->setBackground(QColor(settings.captionBackground));
+}
+
+// The swatch shows the caption box's colour; Reset when it is not the
+// default.
+void Dock::showCaptionColor()
+{
+	const QColor c = settings.captionBackground.isEmpty() ? QColor(10, 12, 41, 190) : QColor(settings.captionBackground);
+	captionColorButton->setStyleSheet(QStringLiteral("QToolButton { background: rgba(%1,%2,%3,%4); border: 1px solid "
+							 "rgba(128,128,128,120); border-radius: 6px; }")
+						  .arg(c.red())
+						  .arg(c.green())
+						  .arg(c.blue())
+						  .arg(c.alpha()));
+	captionColorButton->setToolTip(tr("Caption background: %1 at %2 %").arg(c.name()).arg(qRound(c.alphaF() * 100)));
+	captionColorReset->setVisible(!settings.captionBackground.isEmpty());
+	if (overlay)
+		overlay->setBackground(QColor(settings.captionBackground));
 }
 
 void Dock::setTranscriptPanel(TranscriptPanel *panel)

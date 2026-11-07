@@ -41,6 +41,12 @@ CaptionOverlay::CaptionOverlay(QWidget *mainWindow, QWidget *preview_)
 	follow();
 }
 
+void CaptionOverlay::setBackground(const QColor &color)
+{
+	background = color;
+	update();
+}
+
 void CaptionOverlay::setCaption(const QString &who, const QString &text)
 {
 	speaker = text.isEmpty() ? QString() : who;
@@ -98,7 +104,7 @@ void CaptionOverlay::paintEvent(QPaintEvent *)
 	QPainterPath path;
 	const qreal radius = pad * 0.6;
 	path.addRoundedRect(box, radius, radius);
-	p.fillPath(path, QColor(10, 12, 41, 190));
+	p.fillPath(path, background.isValid() ? background : QColor(10, 12, 41, 190));
 	p.translate(box.left() + pad, box.top() + pad / 2.0);
 	doc.drawContents(&p);
 }

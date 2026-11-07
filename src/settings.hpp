@@ -35,6 +35,9 @@ struct Settings {
 	// transcribed (else the dock offers it).
 	bool autoUpdate = true;
 	bool showCaptions = true;
+	// The caption box's colour over the preview, "#AARRGGBB"; empty:
+	// VocalStack navy at 75 %.
+	QString captionBackground;
 	// The dock was put on screen once; after that OBS keeps where it is.
 	bool dockShown = false;
 
