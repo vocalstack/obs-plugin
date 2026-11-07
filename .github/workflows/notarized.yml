@@ -31,5 +31,6 @@ jobs:
           version=$(gh release view latest -R "$GITHUB_REPOSITORY" --json name --jq .name)
           echo "### $version" >> "$GITHUB_STEP_SUMMARY"
           spctl -a -vv -t install vocalstack-obs-macos.pkg 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | grep -q 'source=Notarized Developer ID'
-          xcrun stapler validate vocalstack-obs-macos.pkg
+          # Apple's ticket server drops connections now and then: asked again.
+          for i in 1 2 3 4 5; do xcrun stapler validate vocalstack-obs-macos.pkg && break; [ $i = 5 ] && exit 1; sleep $((i * 15)); done
           echo "Installer package: notarized, ticket stapled." >> "$GITHUB_STEP_SUMMARY"
