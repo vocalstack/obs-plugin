@@ -39,7 +39,9 @@
 // Caption box choices that are not a language.
 static const char *CAPTIONS_OFF = "off";
 
-static const char *LATEST_RELEASE_PAGE = "https://github.com/vocalstack/obs-plugin/releases/latest";
+// Where an update is read about and downloaded by hand: the plugin's page
+// on the VocalStack website.
+static const char *PLUGIN_PAGE = "https://vocalstack.com/obs-studio-transcription-plugin/";
 
 // The VocalStack logo, at 2x for sharp screens: white on OBS's dark themes,
 // the dark one on a light theme.
@@ -463,7 +465,7 @@ void Dock::showUpdate()
 		case Updater::Age::Current:
 			break;
 		}
-		text += QStringLiteral(" <a href=\"%1\">Release notes</a>").arg(LATEST_RELEASE_PAGE);
+		text += QStringLiteral(" <a href=\"%1\">%2</a>").arg(PLUGIN_PAGE, tr("Download"));
 	}
 	updateNotice->setText(text);
 	updateNotice->setStyleSheet(problem ? "color: #f0a63a;" : "");
