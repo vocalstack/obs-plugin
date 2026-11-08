@@ -34,6 +34,11 @@ public:
 	State state() const { return st; }
 	void start();
 	void stop();
+	// The broadcast script the next Start follows (an id from
+	// GET /v1/broadcasts/{id}/scripts); empty: none. Used once.
+	void setScript(const QString &id) { scriptId = id; }
+	// The script the live recording follows, if any.
+	QString followingScript() const { return followedScript; }
 	// The caption language changed while live: follow it without a restart.
 	void setCaptionLanguage(const QString &lang);
 	// Ask VocalStack the plan's longest live recording (kept in the
@@ -111,6 +116,8 @@ private:
 	QTimer ingestPoll, captionClear, resubscribe, reopenEvents, broadcastPoll;
 	State st = State::Idle;
 	QString recordingId;
+	QString scriptId, followedScript;
+	bool scriptRefused = false;
 	qint64 lastSeq = -1;
 	// The feed's cursor when it was (re)opened: frames at or below it
 	// were seen before, and are not captions again.

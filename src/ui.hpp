@@ -1,5 +1,8 @@
 #pragma once
 
+#include <QDateTime>
+#include <QHash>
+
 // The dock's visual system: VocalStack's tokens (from the web app's
 // ds.css) for OBS's dark and light themes, one stylesheet that styles
 // widgets by their `role` property, and the few components the dock is
@@ -122,6 +125,25 @@ private:
 	int count = 0;
 };
 
+// A script to follow, as the dashboard lists them: a date badge (month over
+// day; a dash when it has no time), the words' first line in italics, and
+// "SCRIPT · N words" under it. One row of a choice: selected shows a ring.
+class ScriptRow : public QFrame {
+	Q_OBJECT
+
+public:
+	// `when` invalid: no time set. An empty `preview`: the "No script" row.
+	ScriptRow(const QDateTime &when, const QString &preview, const QString &detail, QWidget *parent = nullptr);
+	void setSelected(bool on);
+
+signals:
+	void clicked();
+
+protected:
+	void mousePressEvent(QMouseEvent *event) override;
+	void keyPressEvent(QKeyEvent *event) override;
+};
+
 // A setting as a row: its name and a note on the left, its control on the
 // right.
 QWidget *settingRow(const QString &name, const QString &note, QWidget *control);
@@ -134,6 +156,7 @@ public:
 	explicit ElidedLabel(QWidget *parent = nullptr);
 	void setFullText(const QString &text);
 	QString fullText() const { return full; }
+	void setElideMode(Qt::TextElideMode m) { mode = m; refit(); }
 	QSize sizeHint() const override;
 	QSize minimumSizeHint() const override;
 
@@ -143,6 +166,7 @@ protected:
 private:
 	void refit();
 	QString full;
+	Qt::TextElideMode mode = Qt::ElideMiddle;
 };
 
 // A combo box that says when its list is about to open (to reload it).
@@ -155,6 +179,31 @@ public:
 
 signals:
 	void aboutToShowPopup();
+};
+
+// The spoken language as the dashboard shows it: a pill with the translate
+// mark, the language's flag (a globe for Auto detect) and its code, and a
+// chevron; the list of languages opens from it.
+class LanguageChip : public ReloadingCombo {
+	Q_OBJECT
+
+public:
+	explicit LanguageChip(QWidget *parent = nullptr);
+	// Flags by language code, from /v1/languages.
+	void setFlags(const QHash<QString, QString> &flags);
+	QSize sizeHint() const override;
+	QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+	void paintEvent(QPaintEvent *event) override;
+	void enterEvent(QEnterEvent *event) override;
+	void leaveEvent(QEvent *event) override;
+
+private:
+	QString flagText() const;
+	QString codeText() const;
+	QHash<QString, QString> flags;
+	bool hovered = false;
 };
 
 } // namespace ui

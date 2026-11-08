@@ -27,6 +27,7 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QPixmap>
@@ -430,6 +431,7 @@ QWidget *Dock::buildSignedIn()
 		applyBroadcastDefaults(id);
 		showBroadcastLink();
 		updateLinks();
+		loadScripts();
 	});
 	editBroadcastButton = new QPushButton(tr("Edit"));
 	editBroadcastButton->setProperty("role", "edit");
@@ -468,21 +470,63 @@ QWidget *Dock::buildSignedIn()
 	bv->addWidget(liveSummary);
 	v->addLayout(bv);
 
-	spokenBox = new ui::ReloadingCombo;
-	spokenBox->addItem(tr("Loading…"), QString());
+	// The broadcast's scripts, when it has any to follow.
+	scriptBlock = new QWidget;
+	auto *sv = new QVBoxLayout(scriptBlock);
+	sv->setContentsMargins(0, GAP_FIELD, 0, 0);
+	sv->setSpacing(GAP_LABEL);
+	sv->addWidget(ui::eyebrow(tr("Script")));
+	scriptRows = new QVBoxLayout;
+	scriptRows->setSpacing(6);
+	sv->addLayout(scriptRows);
+	scriptBlock->setToolTip(tr("The transcript is matched against the script as it is read, so names, jargon and "
+				   "hard-to-hear words come out right. Anything off-script is still transcribed."));
+	scriptBlock->hide();
+	v->addWidget(scriptBlock);
+
+	// Auto detect / Custom, then the language chip.
+	spokenBox = new ui::LanguageChip;
+	spokenBox->addItem(tr("Auto detect"), QString());
+	spokenBox->setToolTip(tr("The language the speaker will use"));
 	connect(spokenBox, &ui::ReloadingCombo::aboutToShowPopup, this, [this]() {
 		if (spokenLanguages.isEmpty())
 			loadLists();
 	});
-	connect(spokenBox, &QComboBox::activated, this, [this]() {
-		const QString lang = spokenBox->currentData().toString();
-		const bool changed = lang != settings.spokenLanguage;
-		settings.spokenLanguage = lang;
-		settings.save();
-		if (changed)
-			warm->languageChanged();
+	connect(spokenBox, &QComboBox::activated, this,
+		[this]() { chooseSpoken(spokenBox->currentData().toString()); });
+	spokenMode = new ui::Segmented;
+	spokenMode->addOption(tr("Auto detect"), "auto",
+			      tr("Each spoken segment gets its own detected language, so speakers can switch "
+				 "languages mid-conversation."));
+	spokenMode->addOption(tr("Custom"), "custom",
+			      tr("Naming the spoken language improves accuracy on noisy recordings and heavy accents."));
+	connect(spokenMode, &ui::Segmented::changed, this, [this](const QVariant &mode) {
+		if (mode.toString() == "auto") {
+			chooseSpoken(QString());
+			return;
+		}
+		QString lang = lastCustomLanguage;
+		if (lang.isEmpty())
+			lang = QStringLiteral("en");
+		chooseSpoken(lang);
 	});
-	spokenBlock = ui::field(v, tr("Spoken language"), spokenBox);
+	// Whichever way the language changes (a broadcast's default, the
+	// server's), the switch follows.
+	connect(spokenBox, &QComboBox::currentIndexChanged, this, [this]() {
+		const QString lang = spokenBox->currentData().toString();
+		spokenMode->setValue(lang.isEmpty() ? "auto" : "custom");
+		if (!lang.isEmpty())
+			lastCustomLanguage = lang;
+	});
+	spokenMode->installEventFilter(this);
+	auto *spokenRow = new QWidget;
+	auto *sh = new QHBoxLayout(spokenRow);
+	sh->setContentsMargins(0, 0, 0, 0);
+	sh->setSpacing(8);
+	sh->addWidget(spokenMode);
+	sh->addWidget(spokenBox);
+	sh->addStretch(1);
+	spokenBlock = ui::field(v, tr("Spoken language"), spokenRow);
 	spokenBlock->layout()->setContentsMargins(0, GAP_FIELD, 0, 0);
 
 	sendSwitch = new ui::Segmented;
@@ -953,7 +997,10 @@ void Dock::showNotices(const QStringList &warnings, const QStringList &errors)
 void Dock::updateLiveSummary()
 {
 	const QString lang = spokenBox->currentData().toString().isEmpty() ? tr("Auto detect") : spokenBox->currentText();
-	liveSummary->setText(QStringLiteral("%1 · %2").arg(lang, settings.sendVideo ? tr("Audio + video") : tr("Audio only")));
+	QString text = QStringLiteral("%1 · %2").arg(lang, settings.sendVideo ? tr("Audio + video") : tr("Audio only"));
+	if (!session->followingScript().isEmpty())
+		text += QStringLiteral(" · ") + tr("Following the script");
+	liveSummary->setText(text);
 }
 
 void Dock::onState(Session::State s)
@@ -999,6 +1046,10 @@ void Dock::onState(Session::State s)
 	// While live, the fields that cannot change give way to a summary.
 	spokenBlock->setVisible(idle);
 	sendBlock->setVisible(idle);
+	scriptBlock->setVisible(idle && !scripts.isEmpty());
+	// The script just recorded is no longer offered.
+	if (idle && !settings.broadcastId.isEmpty())
+		loadScripts();
 	updateLiveSummary();
 	liveSummary->setVisible(!idle);
 	for (QWidget *w : std::initializer_list<QWidget *>{broadcastBox, editBroadcastButton, speakersSwitch, lockBox,
@@ -1018,7 +1069,7 @@ void Dock::toggle()
 	if (settings.apiKey.isEmpty())
 		return;
 	if (session->state() == Session::State::Idle)
-		session->start();
+		startSession();
 	else
 		session->stop();
 }
@@ -1031,7 +1082,7 @@ static bool obs_busy()
 void Dock::obsOutputStarted()
 {
 	if (settings.followObs && !settings.apiKey.isEmpty() && session->state() == Session::State::Idle)
-		session->start();
+		startSession();
 	updateFollowHint();
 }
 
@@ -1307,6 +1358,20 @@ void Dock::signOut(const QString &why)
 
 // ---------------------------------------------------------------- lists
 
+// Auto detect (empty) or a language, from the chip or the switch.
+void Dock::chooseSpoken(const QString &lang)
+{
+	if (!lang.isEmpty() && spokenBox->findData(lang) < 0)
+		spokenBox->addItem(lang.toUpper(), lang); // until the list arrives
+	spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(lang)));
+	const bool changed = lang != settings.spokenLanguage;
+	settings.spokenLanguage = lang;
+	settings.save();
+	if (changed)
+		warm->languageChanged();
+	updateLiveSummary();
+}
+
 void Dock::loadLists()
 {
 	api->get("/v1/languages", [this](int, const QJsonDocument &doc, const QString &error) {
@@ -1322,9 +1387,13 @@ void Dock::loadLists()
 			return;
 		}
 		const QJsonObject o = doc.object();
-		QHash<QString, QString> names;
-		for (const QJsonValue v : o.value("languages").toArray())
-			names.insert(v.toObject().value("code").toString(), v.toObject().value("name").toString());
+		QHash<QString, QString> names, flags;
+		for (const QJsonValue v : o.value("languages").toArray()) {
+			const QJsonObject l = v.toObject();
+			names.insert(l.value("code").toString(), l.value("name").toString());
+			flags.insert(l.value("code").toString(), l.value("flag").toString());
+		}
+		spokenBox->setFlags(flags);
 		spokenLanguages.clear();
 		for (const QJsonValue c : o.value("transcription").toArray())
 			spokenLanguages.append({names.value(c.toString(), c.toString()), c.toString()});
@@ -1372,7 +1441,109 @@ void Dock::loadBroadcasts(bool choose)
 			applyBroadcastDefaults(settings.broadcastId);
 		showBroadcastLink();
 		updateLinks();
+		loadScripts();
 	});
+}
+
+// ---------------------------------------------------------------- scripts
+
+static const qint64 SCRIPT_NEAR_MS = 12 * 3600 * 1000LL;
+
+void Dock::loadScripts()
+{
+	const QString id = settings.broadcastId;
+	if (id != scriptsFor) {
+		scripts.clear();
+		chosenScript.clear();
+		scriptPicked = false;
+		scriptsFor = id;
+		showScripts();
+	}
+	if (id.isEmpty())
+		return;
+	api->get("/v1/broadcasts/" + id + "/scripts", [this, id](int code, const QJsonDocument &doc, const QString &error) {
+		if (id != settings.broadcastId)
+			return;
+		if (!error.isEmpty()) {
+			if (code != 404)
+				obs_log(LOG_WARNING, "scripts: %s", error.toUtf8().constData());
+			return; // kept as they were
+		}
+		scripts.clear();
+		for (const QJsonValue v : doc.object().value("scripts").toArray()) {
+			const QJsonObject o = v.toObject();
+			if (o.value("locked").toBool() || o.value("recordingId").isString() || o.value("wordCount").toInt() <= 0)
+				continue;
+			scripts.append(o);
+		}
+		bool still = false;
+		for (const QJsonObject &o : scripts)
+			still = still || o.value("id").toString() == chosenScript;
+		if (!still)
+			chosenScript.clear(), scriptPicked = false;
+		if (!scriptPicked) {
+			// The one due nearest to now, within 12 hours.
+			const QDateTime now = QDateTime::currentDateTimeUtc();
+			qint64 best = SCRIPT_NEAR_MS + 1;
+			chosenScript.clear();
+			for (const QJsonObject &o : scripts) {
+				const QDateTime at = QDateTime::fromString(o.value("scheduledAt").toString(), Qt::ISODate);
+				if (!at.isValid())
+					continue;
+				const qint64 d = qAbs(now.msecsTo(at));
+				if (d <= SCRIPT_NEAR_MS && d < best) {
+					best = d;
+					chosenScript = o.value("id").toString();
+				}
+			}
+		}
+		showScripts();
+	});
+}
+
+static QString script_preview(const QString &html)
+{
+	QString t = html;
+	t.replace(QRegularExpression("<br\\s*/?>", QRegularExpression::CaseInsensitiveOption), " ");
+	t.remove(QRegularExpression("<[^>]*>"));
+	t.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&");
+	return t.simplified();
+}
+
+void Dock::showScripts()
+{
+	while (QLayoutItem *item = scriptRows->takeAt(0)) {
+		if (item->widget())
+			item->widget()->deleteLater();
+		delete item;
+	}
+	scriptBlock->setVisible(!scripts.isEmpty() && session->state() == Session::State::Idle);
+	if (scripts.isEmpty())
+		return;
+	auto add = [this](ui::ScriptRow *row, const QString &id) {
+		row->setSelected(id == chosenScript);
+		connect(row, &ui::ScriptRow::clicked, this, [this, id]() {
+			chosenScript = id;
+			scriptPicked = true;
+			showScripts();
+		});
+		scriptRows->addWidget(row);
+	};
+	for (const QJsonObject &o : scripts) {
+		const QDateTime at = QDateTime::fromString(o.value("scheduledAt").toString(), Qt::ISODate).toLocalTime();
+		const int words = o.value("wordCount").toInt();
+		add(new ui::ScriptRow(at, script_preview(o.value("text").toString()),
+				      words == 1 ? tr("Script · 1 word") : tr("Script · %1 words").arg(QLocale().toString(words))),
+		    o.value("id").toString());
+	}
+	add(new ui::ScriptRow(QDateTime(), QString(), tr("Transcribe freely")), QString());
+}
+
+// Start, following the script picked.
+void Dock::startSession()
+{
+	session->setScript(chosenScript);
+	session->start();
 }
 
 // The list: none, the broadcasts, and "New broadcast…" at its end. Left as
@@ -1845,6 +2016,12 @@ bool Dock::eventFilter(QObject *watched, QEvent *event)
 	if (watched == broadcastBox) {
 		if (event->type() == QEvent::Resize || event->type() == QEvent::Show)
 			editBroadcastButton->setFixedHeight(broadcastBox->height());
+		return QWidget::eventFilter(watched, event);
+	}
+	// The language chip as tall as Auto detect / Custom beside it.
+	if (watched == spokenMode) {
+		if (event->type() == QEvent::Resize || event->type() == QEvent::Show)
+			spokenBox->setFixedHeight(spokenMode->height());
 		return QWidget::eventFilter(watched, event);
 	}
 	if (event->type() != QEvent::Close || session->state() == Session::State::Idle || closeHeld)

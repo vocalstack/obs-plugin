@@ -1,5 +1,11 @@
 #include "ui.hpp"
 
+#include <QLocale>
+
+#include <QKeyEvent>
+
+#include <QEnterEvent>
+
 #include <QAbstractButton>
 #include <QButtonGroup>
 #include <QHBoxLayout>
@@ -107,6 +113,12 @@ QToolButton[role="toggle"] {
 QToolButton[role="toggle"]:checked { background: PRIMARY; border-color: PRIMARY; color: #ffffff; }
 QToolButton[role="toggle"]:focus { border-color: rgba(BRANDRGB,210); }
 
+QFrame[role="scriptrow"] { background: rgba(FGRGB,8); border: 1px solid rgba(FGRGB,18); border-radius: 10px; }
+QFrame[role="scriptrow"]:hover { background: rgba(FGRGB,14); }
+QFrame[role="scriptrow"][selected="true"] { border: 2px solid BRAND; background: rgba(BRANDRGB,22); }
+QFrame[role="scriptrow"]:focus { border-color: rgba(BRANDRGB,210); }
+QLabel[role="badge"] { border: 2px solid BRAND; border-radius: 8px; color: palette(text); background: transparent; }
+QLabel[role="scripttag"] { color: BRAND; }
 QFrame[role="card"] { background: rgba(FGRGB,10); border: 1px solid rgba(FGRGB,18); border-radius: 10px; }
 QFrame[role="rule"] { background: rgba(FGRGB,18); border: none; min-height: 1px; max-height: 1px; }
 QFrame[role="callout"] { border: none; border-radius: 6px; border-left: 3px solid BRAND; background: rgba(BRANDRGB,31); }
@@ -120,13 +132,15 @@ QFrame[role="segmented"] QPushButton {
 QFrame[role="segmented"] QPushButton:hover { background: rgba(FGRGB,13); }
 QFrame[role="segmented"] QPushButton:pressed { background: rgba(FGRGB,20); }
 QFrame[role="segmented"] QPushButton:focus { border-color: rgba(BRANDRGB,210); }
-QFrame[role="segmented"] QPushButton:checked { background: PRIMARY; color: #ffffff; font-weight: 600; }
+QFrame[role="segmented"] QPushButton:checked { background: SEGON; color: SEGONTEXT; font-weight: 600; }
 QFrame[role="segmented"] QPushButton:disabled { color: MUTED; }
 QFrame[role="segmented"] QPushButton:checked:disabled { background: rgba(BRANDRGB,70); color: rgba(255,255,255,200); }
 
 QLineEdit[invalid="true"], QComboBox[invalid="true"] { border: 1px solid ERROR; border-radius: 4px; }
 QScrollArea[role="page"], QScrollArea[role="page"] > QWidget > QWidget { background: transparent; }
 )";
+	s.replace("SEGONTEXT", dark ? "#13142b" : "#ffffff");
+	s.replace("SEGON", dark ? "#6aaee6" : primary);
 	s.replace("PRIMARYHOVERTEXT", dark ? "#85b4e0" : "#1f4e7a")
 		.replace("PRIMARYHOVER", primaryHover)
 		.replace("PRIMARYTEXT", primaryText)
@@ -379,7 +393,7 @@ void ElidedLabel::resizeEvent(QResizeEvent *event)
 
 void ElidedLabel::refit()
 {
-	QLabel::setText(fontMetrics().elidedText(full, Qt::ElideMiddle, qMax(0, width())));
+	QLabel::setText(fontMetrics().elidedText(full, mode, qMax(0, width())));
 }
 
 Switch::Switch(QWidget *parent) : QAbstractButton(parent)
@@ -422,6 +436,73 @@ void Switch::paintEvent(QPaintEvent *)
 	const qreal x = isChecked() ? track.right() - 2 - d : track.left() + 2;
 	p.setBrush(isEnabled() ? QColor(Qt::white) : QColor(255, 255, 255, 150));
 	p.drawEllipse(QRectF(x, track.top() + 2, d, d));
+}
+
+ScriptRow::ScriptRow(const QDateTime &when, const QString &preview, const QString &detail, QWidget *parent)
+	: QFrame(parent)
+{
+	setProperty("role", "scriptrow");
+	setProperty("selected", false);
+	setCursor(Qt::PointingHandCursor);
+	setFocusPolicy(Qt::TabFocus);
+	auto *h = new QHBoxLayout(this);
+	h->setContentsMargins(10, 8, 12, 8);
+	h->setSpacing(12);
+
+	auto *badge = new QLabel;
+	badge->setProperty("role", "badge");
+	badge->setAlignment(Qt::AlignCenter);
+	badge->setFixedSize(44, 46);
+	const Theme t = Theme::of(this);
+	if (preview.isEmpty())
+		badge->setText(QStringLiteral("<span style='font-size:15pt;'>∅</span>"));
+	else if (when.isValid())
+		badge->setText(QStringLiteral("<div style='font-size:8pt; font-weight:600; letter-spacing:1px; color:%1;'>%2</div>"
+					      "<div style='font-size:14pt; font-weight:600;'>%3</div>")
+				       .arg(t.brand, QLocale::c().toString(when, "MMM").toUpper(), when.toString("dd")));
+	else
+		badge->setText(QStringLiteral("<span style='font-size:14pt;'>—</span>"));
+	badge->setToolTip(when.isValid() ? QLocale().toString(when, QLocale::LongFormat) : QString());
+	h->addWidget(badge);
+
+	auto *v = new QVBoxLayout;
+	v->setSpacing(2);
+	auto *text = new ElidedLabel;
+	QFont f = text->font();
+	f.setItalic(!preview.isEmpty());
+	f.setPointSizeF(f.pointSizeF() * 1.05);
+	text->setFont(f);
+	text->setTextInteractionFlags(Qt::NoTextInteraction);
+	text->setElideMode(Qt::ElideRight);
+	text->setFullText(preview.isEmpty() ? tr("No script") : preview);
+	text->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+	v->addWidget(text);
+	auto *tag = eyebrow(detail);
+	if (!preview.isEmpty())
+		tag->setProperty("role", "scripttag");
+	v->addWidget(tag);
+	h->addLayout(v, 1);
+}
+
+void ScriptRow::setSelected(bool on)
+{
+	setProperty("selected", on);
+	repolish(this);
+}
+
+void ScriptRow::mousePressEvent(QMouseEvent *event)
+{
+	QFrame::mousePressEvent(event);
+	emit clicked();
+}
+
+void ScriptRow::keyPressEvent(QKeyEvent *event)
+{
+	if (event->key() == Qt::Key_Space || event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+		emit clicked();
+		return;
+	}
+	QFrame::keyPressEvent(event);
 }
 
 Card::Card(QWidget *parent) : QFrame(parent)
@@ -473,6 +554,121 @@ void ReloadingCombo::showPopup()
 {
 	emit aboutToShowPopup();
 	QComboBox::showPopup();
+}
+
+LanguageChip::LanguageChip(QWidget *parent) : ReloadingCombo(parent)
+{
+	setCursor(Qt::PointingHandCursor);
+	setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+	setAttribute(Qt::WA_Hover);
+	connect(this, &QComboBox::currentIndexChanged, this, [this]() { updateGeometry(); update(); });
+}
+
+void LanguageChip::setFlags(const QHash<QString, QString> &f)
+{
+	flags = f;
+	updateGeometry();
+	update();
+}
+
+QString LanguageChip::flagText() const
+{
+	const QString code = currentData().toString();
+	const QString flag = flags.value(code);
+	return code.isEmpty() || flag.isEmpty() ? QStringLiteral("🌐") : flag;
+}
+
+QString LanguageChip::codeText() const
+{
+	return currentData().toString().toUpper();
+}
+
+static const int CHIP_H = 36, CHIP_PAD = 14, CHIP_GAP = 8, CHEVRON_W = 10;
+static const QString TRANSLATE_MARK = QStringLiteral("文A");
+
+QSize LanguageChip::sizeHint() const
+{
+	const QFontMetrics fm(font());
+	QFont big = font();
+	big.setPointSizeF(big.pointSizeF() * 1.25);
+	const QFontMetrics bm(big);
+	int w = CHIP_PAD + fm.horizontalAdvance(TRANSLATE_MARK) + CHIP_GAP + bm.horizontalAdvance(flagText());
+	if (!codeText().isEmpty()) {
+		QFont bold = font();
+		bold.setWeight(QFont::DemiBold);
+		w += 6 + QFontMetrics(bold).horizontalAdvance(codeText());
+	}
+	w += CHIP_GAP + CHEVRON_W + CHIP_PAD;
+	return QSize(w, CHIP_H);
+}
+
+void LanguageChip::enterEvent(QEnterEvent *event)
+{
+	hovered = true;
+	update();
+	ReloadingCombo::enterEvent(event);
+}
+
+void LanguageChip::leaveEvent(QEvent *event)
+{
+	hovered = false;
+	update();
+	ReloadingCombo::leaveEvent(event);
+}
+
+void LanguageChip::paintEvent(QPaintEvent *)
+{
+	const Theme t = Theme::of(this);
+	const QStringList rgb = t.fgRgb.split(',');
+	const QColor fg(rgb.value(0).toInt(), rgb.value(1).toInt(), rgb.value(2).toInt());
+	QPainter p(this);
+	p.setRenderHint(QPainter::Antialiasing);
+	QColor bg = fg;
+	bg.setAlpha(hovered ? 26 : 13);
+	QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+	p.setPen(hasFocus() ? QPen(QColor(t.brand), 2) : QPen(Qt::NoPen));
+	p.setBrush(bg);
+	p.drawRoundedRect(r, r.height() / 2, r.height() / 2);
+
+	QColor ink = fg;
+	ink.setAlpha(isEnabled() ? 170 : 90);
+	int x = CHIP_PAD;
+	const QFontMetrics fm(font());
+	p.setFont(font());
+	p.setPen(ink);
+	const int markW = fm.horizontalAdvance(TRANSLATE_MARK);
+	p.drawText(QRect(x, 0, markW, height()), Qt::AlignVCenter, TRANSLATE_MARK);
+	x += markW + CHIP_GAP;
+
+	QFont big = font();
+	big.setPointSizeF(big.pointSizeF() * 1.25);
+	p.setFont(big);
+	const int flagW = QFontMetrics(big).horizontalAdvance(flagText());
+	p.drawText(QRect(x, 0, flagW, height()), Qt::AlignVCenter, flagText());
+	x += flagW;
+
+	if (!codeText().isEmpty()) {
+		QFont bold = font();
+		bold.setWeight(QFont::DemiBold);
+		p.setFont(bold);
+		QColor strong = fg;
+		strong.setAlpha(isEnabled() ? 230 : 110);
+		p.setPen(strong);
+		const int codeW = QFontMetrics(bold).horizontalAdvance(codeText());
+		x += 6;
+		p.drawText(QRect(x, 0, codeW, height()), Qt::AlignVCenter, codeText());
+		x += codeW;
+	}
+	x += CHIP_GAP;
+
+	QPen chevron(ink, 1.6);
+	chevron.setCapStyle(Qt::RoundCap);
+	chevron.setJoinStyle(Qt::RoundJoin);
+	p.setPen(chevron);
+	p.setBrush(Qt::NoBrush);
+	const qreal cy = height() / 2.0;
+	const QPointF pts[3] = {{x + 0.0, cy - 2.5}, {x + CHEVRON_W / 2.0, cy + 2.5}, {x + qreal(CHEVRON_W), cy - 2.5}};
+	p.drawPolyline(pts, 3);
 }
 
 } // namespace ui

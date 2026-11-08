@@ -364,13 +364,26 @@ void Session::startRecording(bool takeover)
 	QJsonObject body;
 	if (takeover)
 		body.insert("takeover", true);
+	// A script is followed only on a broadcast this transcription feeds.
+	const QString script = settings->broadcastId.isEmpty() ? QString() : scriptId;
+	if (!script.isEmpty())
+		body.insert("scriptId", script);
 	// A start sent again after a timeout is answered as the first was,
 	// not recorded twice.
 	const QString key = QUuid::createUuid().toString(QUuid::WithoutBraces);
 	api->post("/v1/transcriptions/" + settings->transcriptionId + "/recordings", body, key,
-		  [this, takeover](int code, const QJsonDocument &doc, const QString &error) {
+		  [this, takeover, script](int code, const QJsonDocument &doc, const QString &error) {
 			  if (st != State::Starting)
 				  return;
+			  // The script is gone or was recorded since: start without it.
+			  if (!script.isEmpty() && (code == 404 || (code == 409 && Api::errorCode(doc) == "invalid_state"))) {
+				  obs_log(LOG_WARNING, "script %s refused: %s", script.toUtf8().constData(),
+					  error.toUtf8().constData());
+				  scriptId.clear();
+				  scriptRefused = true;
+				  startRecording(takeover);
+				  return;
+			  }
 			  if (code == 409 && !takeover && Api::errorCode(doc) == "conflict") {
 				  // Another device holds this transcription: OBS takes it.
 				  startRecording(true);
@@ -381,6 +394,8 @@ void Session::startRecording(bool takeover)
 				  return;
 			  }
 			  recordingId = doc.object().value("recording").toObject().value("id").toString();
+			  followedScript = doc.object().value("recording").toObject().value("scriptId").toString();
+			  scriptId.clear();
 			  lastSeq = -1;
 			  readyCursor = -1;
 			  sentences = false;
@@ -392,7 +407,12 @@ void Session::startRecording(bool takeover)
 			  shownSpeaker = -1;
 			  resubscribeMs = reopenEventsMs = RESUBSCRIBE_MS;
 			  setState(State::Live);
-			  emit status(tr("Transcribing"), Session::Level::Ok);
+			  if (scriptRefused)
+				  emit status(tr("Transcribing without the script: it was recorded or deleted."),
+					      Session::Level::Warn);
+			  else
+				  emit status(tr("Transcribing"), Session::Level::Ok);
+			  scriptRefused = false;
 			  ingestPoll.start();
 			  openEvents();
 			  if (settings->showCaptions)
@@ -429,6 +449,7 @@ void Session::end(const QString &error)
 
 	auto done = [this, error]() {
 		recordingId.clear();
+		followedScript.clear();
 		setState(State::Idle);
 		if (error.isEmpty())
 			emit status(tr("Stopped"), Session::Level::Ok);

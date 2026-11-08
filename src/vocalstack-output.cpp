@@ -48,7 +48,10 @@ bool VocalStackOutput::start(const QString &serverUrl, const QString &streamKey,
 		return true;
 	OBSDataAutoRelease serviceSettings = obs_data_create();
 	obs_data_set_string(serviceSettings, "server", serverUrl.toUtf8().constData());
-	obs_data_set_string(serviceSettings, "key", streamKey.toUtf8().constData());
+	// OBS's RTMP output always carries video, so audio only sends a tiny
+	// placeholder picture; "?video=0" on the key tells the ingest to drop it.
+	const QString key = video ? streamKey : streamKey + QStringLiteral("?video=0");
+	obs_data_set_string(serviceSettings, "key", key.toUtf8().constData());
 	service = obs_service_create_private("rtmp_custom", "vocalstack_service", serviceSettings);
 
 	OBSDataAutoRelease videoSettings = obs_data_create();

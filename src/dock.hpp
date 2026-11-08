@@ -29,6 +29,7 @@ class WarmPing;
 namespace ui {
 class Callout;
 class ElidedLabel;
+class LanguageChip;
 class ReloadingCombo;
 class Segmented;
 class Switch;
@@ -104,6 +105,11 @@ private:
 	void showUpdate();
 	// A broadcast was chosen: its capture settings become the dock's.
 	void applyBroadcastDefaults(const QString &id);
+	// The chosen broadcast's scripts not yet recorded, and which one Start
+	// follows (by default the one due nearest to now within 12 h).
+	void loadScripts();
+	void showScripts();
+	void startSession();
 	void openBroadcastEditor(const QString &id);
 	void updateBroadcastEditor();
 	void saveBroadcast();
@@ -144,7 +150,12 @@ private:
 	// Main page.
 	QLabel *accountLabel;
 	ui::ReloadingCombo *broadcastBox;
-	ui::ReloadingCombo *spokenBox;
+	ui::LanguageChip *spokenBox;
+	// Auto detect or Custom, beside the chip; the language Custom goes back
+	// to.
+	ui::Segmented *spokenMode;
+	QString lastCustomLanguage;
+	void chooseSpoken(const QString &lang);
 	ui::Segmented *sendSwitch;
 	QPushButton *editBroadcastButton;
 	QToolButton *copyBroadcastButton, *broadcastAction;
@@ -167,6 +178,13 @@ private:
 	Session::Level liveLevel = Session::Level::Ok;
 	int liveTicks = 0;
 	QVBoxLayout *noticesBox;
+	QWidget *scriptBlock;
+	QVBoxLayout *scriptRows;
+	QList<QJsonObject> scripts;
+	// The broadcast the scripts are for; the script picked ("" for none),
+	// and whether the person picked it (else the default is kept fresh).
+	QString scriptsFor, chosenScript;
+	bool scriptPicked = false;
 	QStringList dismissedNotices;
 	QStringList currentNotices;
 	QTimer *stopSpin;
