@@ -479,8 +479,6 @@ QWidget *Dock::buildSignedIn()
 	scriptRows = new QVBoxLayout;
 	scriptRows->setSpacing(6);
 	sv->addLayout(scriptRows);
-	scriptBlock->setToolTip(tr("The transcript is matched against the script as it is read, so names, jargon and "
-				   "hard-to-hear words come out right. Anything off-script is still transcribed."));
 	scriptBlock->hide();
 	v->addWidget(scriptBlock);
 
@@ -1522,10 +1520,13 @@ void Dock::showScripts()
 		return;
 	auto add = [this](ui::ScriptRow *row, const QString &id) {
 		row->setSelected(id == chosenScript);
+		row->setProperty("scriptId", id);
+		// Only the rings change: the rows stay where they are.
 		connect(row, &ui::ScriptRow::clicked, this, [this, id]() {
 			chosenScript = id;
 			scriptPicked = true;
-			showScripts();
+			for (auto *r : scriptBlock->findChildren<ui::ScriptRow *>())
+				r->setSelected(r->property("scriptId").toString() == chosenScript);
 		});
 		scriptRows->addWidget(row);
 	};

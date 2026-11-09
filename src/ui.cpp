@@ -113,9 +113,9 @@ QToolButton[role="toggle"] {
 QToolButton[role="toggle"]:checked { background: PRIMARY; border-color: PRIMARY; color: #ffffff; }
 QToolButton[role="toggle"]:focus { border-color: rgba(BRANDRGB,210); }
 
-QFrame[role="scriptrow"] { background: rgba(FGRGB,8); border: 1px solid rgba(FGRGB,18); border-radius: 10px; }
+QFrame[role="scriptrow"] { background: rgba(FGRGB,8); border: 2px solid rgba(FGRGB,18); border-radius: 10px; }
 QFrame[role="scriptrow"]:hover { background: rgba(FGRGB,14); }
-QFrame[role="scriptrow"][selected="true"] { border: 2px solid BRAND; background: rgba(BRANDRGB,22); }
+QFrame[role="scriptrow"][selected="true"] { border-color: BRAND; background: rgba(BRANDRGB,22); }
 QFrame[role="scriptrow"]:focus { border-color: rgba(BRANDRGB,210); }
 QLabel[role="badge"] { border: 2px solid BRAND; border-radius: 8px; color: palette(text); background: transparent; }
 QLabel[role="scripttag"] { color: BRAND; }
@@ -462,7 +462,6 @@ ScriptRow::ScriptRow(const QDateTime &when, const QString &preview, const QStrin
 				       .arg(t.brand, QLocale::c().toString(when, "MMM").toUpper(), when.toString("dd")));
 	else
 		badge->setText(QStringLiteral("<span style='font-size:14pt;'>—</span>"));
-	badge->setToolTip(when.isValid() ? QLocale().toString(when, QLocale::LongFormat) : QString());
 	h->addWidget(badge);
 
 	auto *v = new QVBoxLayout;
@@ -475,6 +474,7 @@ ScriptRow::ScriptRow(const QDateTime &when, const QString &preview, const QStrin
 	text->setTextInteractionFlags(Qt::NoTextInteraction);
 	text->setElideMode(Qt::ElideRight);
 	text->setFullText(preview.isEmpty() ? tr("No script") : preview);
+	text->setToolTip(QString());
 	text->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 	v->addWidget(text);
 	auto *tag = eyebrow(detail);
