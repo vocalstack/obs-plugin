@@ -2000,8 +2000,8 @@ void Dock::saveBroadcast()
 	if (!editing || code != editingOrigCode)
 		body.insert("code", code);
 	if (!editing) {
-		// As the dashboard makes one: titles, summaries and voices on.
-		for (const char *f : {"summary", "title", "summaryTranslations", "voice"})
+		// As the dashboard makes one: titles, summaries and text-to-speech of translations on.
+		for (const char *f : {"summary", "title", "summaryTranslations", "translationTts"})
 			bsettings.insert(f, true);
 	}
 	body.insert("settings", bsettings);
