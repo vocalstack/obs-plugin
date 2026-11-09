@@ -179,7 +179,12 @@ private:
 	int liveTicks = 0;
 	QVBoxLayout *noticesBox;
 	QWidget *scriptBlock;
-	QVBoxLayout *scriptRows;
+	QVBoxLayout *scriptRows, *scriptFoot;
+	// Three scripts show at a time; more scroll, with a hint saying how
+	// many and where.
+	class QScrollArea *scriptScroll;
+	QLabel *scriptCount, *scriptHint;
+	void updateScriptHint();
 	QList<QJsonObject> scripts;
 	// The broadcast the scripts are for; the script picked ("" for none),
 	// and whether the person picked it (else the default is kept fresh).

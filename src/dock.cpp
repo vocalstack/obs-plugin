@@ -34,6 +34,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QShortcut>
 #include <QStackedWidget>
 #include <QTimer>
@@ -475,10 +476,34 @@ QWidget *Dock::buildSignedIn()
 	auto *sv = new QVBoxLayout(scriptBlock);
 	sv->setContentsMargins(0, GAP_FIELD, 0, 0);
 	sv->setSpacing(GAP_LABEL);
-	sv->addWidget(ui::eyebrow(tr("Script")));
-	scriptRows = new QVBoxLayout;
+	auto *scriptHead = new QHBoxLayout;
+	scriptHead->addWidget(ui::eyebrow(tr("Script")));
+	scriptHead->addStretch(1);
+	scriptCount = ui::eyebrow(QString());
+	scriptHead->addWidget(scriptCount);
+	sv->addLayout(scriptHead);
+	auto *rowsHost = new QWidget;
+	scriptRows = new QVBoxLayout(rowsHost);
+	scriptRows->setContentsMargins(0, 0, 0, 0);
 	scriptRows->setSpacing(6);
-	sv->addLayout(scriptRows);
+	scriptScroll = new QScrollArea;
+	scriptScroll->setProperty("role", "page");
+	scriptScroll->setFrameShape(QFrame::NoFrame);
+	scriptScroll->setWidgetResizable(true);
+	scriptScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	scriptScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+	scriptScroll->setWidget(rowsHost);
+	connect(scriptScroll->verticalScrollBar(), &QScrollBar::valueChanged, this, &Dock::updateScriptHint);
+	connect(scriptScroll->verticalScrollBar(), &QScrollBar::rangeChanged, this, &Dock::updateScriptHint);
+	sv->addWidget(scriptScroll);
+	scriptHint = ui::muted();
+	scriptHint->setAlignment(Qt::AlignCenter);
+	scriptHint->hide();
+	sv->addWidget(scriptHint);
+	// "No script" stays in reach below the list, however long it is.
+	scriptFoot = new QVBoxLayout;
+	scriptFoot->setContentsMargins(0, 2, 0, 0);
+	sv->addLayout(scriptFoot);
 	scriptBlock->hide();
 	v->addWidget(scriptBlock);
 
@@ -1446,6 +1471,7 @@ void Dock::loadBroadcasts(bool choose)
 // ---------------------------------------------------------------- scripts
 
 static const qint64 SCRIPT_NEAR_MS = 12 * 3600 * 1000LL;
+static const int SCRIPTS_SHOWN = 3;
 
 void Dock::loadScripts()
 {
@@ -1510,17 +1536,21 @@ static QString script_preview(const QString &html)
 
 void Dock::showScripts()
 {
-	while (QLayoutItem *item = scriptRows->takeAt(0)) {
-		if (item->widget())
-			item->widget()->deleteLater();
-		delete item;
-	}
+	for (QVBoxLayout *box : {scriptRows, scriptFoot})
+		while (QLayoutItem *item = box->takeAt(0)) {
+			if (item->widget())
+				item->widget()->deleteLater();
+			delete item;
+		}
 	scriptBlock->setVisible(!scripts.isEmpty() && session->state() == Session::State::Idle);
 	if (scripts.isEmpty())
 		return;
-	auto add = [this](ui::ScriptRow *row, const QString &id) {
+	ui::ScriptRow *chosenRow = nullptr;
+	auto add = [this, &chosenRow](QVBoxLayout *box, ui::ScriptRow *row, const QString &id) {
 		row->setSelected(id == chosenScript);
 		row->setProperty("scriptId", id);
+		if (id == chosenScript)
+			chosenRow = row;
 		// Only the rings change: the rows stay where they are.
 		connect(row, &ui::ScriptRow::clicked, this, [this, id]() {
 			chosenScript = id;
@@ -1528,16 +1558,49 @@ void Dock::showScripts()
 			for (auto *r : scriptBlock->findChildren<ui::ScriptRow *>())
 				r->setSelected(r->property("scriptId").toString() == chosenScript);
 		});
-		scriptRows->addWidget(row);
+		box->addWidget(row);
 	};
 	for (const QJsonObject &o : scripts) {
 		const QDateTime at = QDateTime::fromString(o.value("scheduledAt").toString(), Qt::ISODate).toLocalTime();
 		const int words = o.value("wordCount").toInt();
-		add(new ui::ScriptRow(at, script_preview(o.value("text").toString()),
+		add(scriptRows,
+		    new ui::ScriptRow(at, script_preview(o.value("text").toString()),
 				      words == 1 ? tr("Script · 1 word") : tr("Script · %1 words").arg(QLocale().toString(words))),
 		    o.value("id").toString());
 	}
-	add(new ui::ScriptRow(QDateTime(), QString(), tr("Transcribe freely")), QString());
+	scriptRows->addStretch(1);
+	add(scriptFoot, new ui::ScriptRow(QDateTime(), QString(), tr("Transcribe freely")), QString());
+
+	// At most three rows high.
+	const int shown = qMin<int>(SCRIPTS_SHOWN, int(scripts.size()));
+	const int rowH = scriptRows->itemAt(0)->widget()->sizeHint().height();
+	scriptScroll->setFixedHeight(shown * rowH + (shown - 1) * scriptRows->spacing());
+	scriptCount->setText(scripts.size() > SCRIPTS_SHOWN ? tr("%1 scripts").arg(scripts.size()) : QString());
+	scriptScroll->verticalScrollBar()->setValue(0);
+	if (chosenRow)
+		QTimer::singleShot(0, this, [this, chosenRow]() { scriptScroll->ensureWidgetVisible(chosenRow, 0, 0); });
+	updateScriptHint();
+}
+
+// Under a list longer than three: how many more, and which way.
+void Dock::updateScriptHint()
+{
+	const int total = int(scripts.size());
+	if (total <= SCRIPTS_SHOWN) {
+		scriptHint->hide();
+		return;
+	}
+	QScrollBar *bar = scriptScroll->verticalScrollBar();
+	const int pitch = scriptRows->itemAt(0)->widget()->sizeHint().height() + scriptRows->spacing();
+	const int first = qBound(1, int(qRound(double(bar->value()) / pitch)) + 1, total - SCRIPTS_SHOWN + 1);
+	const int last = first + SCRIPTS_SHOWN - 1;
+	if (bar->value() <= 0)
+		scriptHint->setText(tr("↓  Scroll for %1 more").arg(total - SCRIPTS_SHOWN));
+	else if (bar->value() >= bar->maximum())
+		scriptHint->setText(tr("↑  %1–%2 of %3").arg(first).arg(last).arg(total));
+	else
+		scriptHint->setText(tr("↕  %1–%2 of %3").arg(first).arg(last).arg(total));
+	scriptHint->show();
 }
 
 // Start, following the script picked.
