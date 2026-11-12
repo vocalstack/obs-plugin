@@ -1,5 +1,7 @@
 #pragma once
 
+#include "workspace.hpp"
+
 #include <QObject>
 #include <QPointer>
 #include <QTcpServer>
@@ -22,13 +24,14 @@ public:
 	void cancel();
 
 signals:
-	// The key and the account's name, or an error (empty when cancelled).
-	void finished(const QString &key, const QString &account, const QString &error);
+	// The key, the account's name and the workspace the key belongs to
+	// (unknown from an older API), or an error (empty when cancelled).
+	void finished(const QString &key, const QString &account, const Workspace &workspace, const QString &error);
 
 private:
 	void onConnection();
 	void answer(class QTcpSocket *socket, const QByteArray &requestLine);
-	void finish(const QString &key, const QString &account, const QString &error);
+	void finish(const QString &key, const QString &account, const Workspace &workspace, const QString &error);
 
 	Api *api;
 	QTcpServer server;

@@ -69,6 +69,8 @@ target_sources(
     src/updater.hpp
     src/websocket.cpp
     src/websocket.hpp
+    src/workspace.cpp
+    src/workspace.hpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

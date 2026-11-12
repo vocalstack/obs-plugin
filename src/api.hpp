@@ -38,6 +38,9 @@ public:
 	void patch(const QString &path, const QJsonObject &body, Done done);
 	void put(const QString &path, Done done);
 	void del(const QString &path, Done done);
+	// A delete whose refusal never signs the person out (tidying up after
+	// a key that is being replaced).
+	void delQuiet(const QString &path, Done done);
 	// A form post without the key (OAuth's token endpoint).
 	void postForm(const QString &path, const QUrlQuery &form, Done done);
 	// A GET of another site's JSON at `url`, without the key (GitHub's
@@ -47,6 +50,11 @@ public:
 	// gets the HTTP status and an error, or none.
 	using Saved = std::function<void(int status, const QString &error)>;
 	void download(const QString &url, const QString &path, Saved done);
+	// A GET of a small file under the API's address (`link` is relative to
+	// it), without the key: a workspace's icon. `body` is empty when it
+	// failed.
+	using Fetched = std::function<void(const QByteArray &body)>;
+	void fetch(const QString &link, Fetched done);
 
 	// The API's error code of a failed call's body (`insufficient_credit`,
 	// `not_found`…), empty when the body is not the API's.

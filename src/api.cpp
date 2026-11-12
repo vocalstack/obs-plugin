@@ -7,6 +7,7 @@
 
 #include <QPointer>
 #include <QTimer>
+#include <QUrl>
 
 #include <cstdio>
 
@@ -92,6 +93,16 @@ void Api::del(const QString &path, Done done)
 	send(std::move(r), std::move(done));
 }
 
+void Api::delQuiet(const QString &path, Done done)
+{
+	Request r;
+	r.method = "DELETE";
+	r.url = api + path;
+	r.hasBody = true;
+	r.quiet = true;
+	send(std::move(r), std::move(done));
+}
+
 void Api::postForm(const QString &path, const QUrlQuery &form, Done done)
 {
 	Request r;
@@ -148,6 +159,43 @@ void Api::download(const QString &url, const QString &path, Saved done)
 			done(int(status), tr("The download answered %1").arg(status));
 		else
 			done(int(status), QString());
+	});
+}
+
+// An icon is a few kilobytes; anything far larger is not one.
+static const qsizetype FETCH_MAX = 4 * 1024 * 1024;
+
+static size_t collect_capped(char *data, size_t size, size_t n, void *into)
+{
+	auto *bytes = static_cast<QByteArray *>(into);
+	if (bytes->size() + qsizetype(size * n) > FETCH_MAX)
+		return 0;
+	bytes->append(data, qsizetype(size * n));
+	return size * n;
+}
+
+void Api::fetch(const QString &link, Fetched done)
+{
+	const QUrl url = QUrl(api + "/").resolved(QUrl(link));
+	CURL *easy = curl_easy_init();
+	auto *received = new QByteArray;
+	curl_easy_setopt(easy, CURLOPT_URL, url.toString(QUrl::FullyEncoded).toUtf8().constData());
+	curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
+	curl_easy_setopt(easy, CURLOPT_MAXREDIRS, 5L);
+	curl_easy_setopt(easy, CURLOPT_USERAGENT, (QByteArray("vocalstack-obs/") + PLUGIN_VERSION).constData());
+	curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, 20000L);
+	curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
+	curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, collect_capped);
+	curl_easy_setopt(easy, CURLOPT_WRITEDATA, received);
+	QPointer<Api> self(this);
+	Net::instance().add(easy, [self, easy, received, done = std::move(done)](CURLcode result) {
+		long status = 0;
+		curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+		const QByteArray body = result == CURLE_OK && status == 200 ? *received : QByteArray();
+		curl_easy_cleanup(easy);
+		delete received;
+		if (self)
+			done(body);
 	});
 }
 

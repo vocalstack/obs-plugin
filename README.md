@@ -10,7 +10,8 @@ Read more about the [VocalStack live transcription plugin for OBS Studio](https:
 - A **VocalStack dock** in OBS: sign in with one click (or an API key), name the transcription, pick a
   broadcast, set the spoken language and choose captions as spoken or translated. Speaker labels, the
   transcription mode (automatic, fast, accurate), an AI title and summary of each recording, and a lock
-  against deletion are set from the dock too.
+  against deletion are set from the dock too. The dock and Settings show the **workspace** the plugin
+  works in, with its icon; **Change** signs in again to pick another one.
 - **Start transcribing** from the dock or a hotkey, or let it start and stop with OBS's own streaming or
   recording. Each recording asks for the longest length your plan allows.
 - The plugin sends OBS's audio (or audio and video) to VocalStack over its own connection, so the stream

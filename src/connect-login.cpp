@@ -33,14 +33,14 @@ ConnectLogin::ConnectLogin(Api *api_, QObject *parent) : QObject(parent), api(ap
 	connect(&server, &QTcpServer::newConnection, this, &ConnectLogin::onConnection);
 	timeout.setSingleShot(true);
 	connect(&timeout, &QTimer::timeout, this,
-		[this]() { finish({}, {}, tr("Sign-in timed out. Try again.")); });
+		[this]() { finish({}, {}, {}, tr("Sign-in timed out. Try again.")); });
 }
 
 void ConnectLogin::start()
 {
 	cancel();
 	if (!server.listen(QHostAddress::LocalHost, 0)) {
-		emit finished({}, {}, tr("Could not listen on this computer: %1").arg(server.errorString()));
+		emit finished({}, {}, {}, tr("Could not listen on this computer: %1").arg(server.errorString()));
 		return;
 	}
 	done = false;
@@ -69,7 +69,7 @@ void ConnectLogin::start()
 void ConnectLogin::cancel()
 {
 	if (!done)
-		finish({}, {}, {});
+		finish({}, {}, {}, {});
 }
 
 void ConnectLogin::onConnection()
@@ -124,7 +124,7 @@ void ConnectLogin::answer(QTcpSocket *socket, const QByteArray &requestLine)
 	}
 	if (q.hasQueryItem("error")) {
 		reply_page(socket, 200, tr("Sign-in cancelled. You can close this tab."));
-		finish({}, {}, {});
+		finish({}, {}, {}, {});
 		return;
 	}
 	const QString code = q.queryItemValue("code");
@@ -139,21 +139,22 @@ void ConnectLogin::answer(QTcpSocket *socket, const QByteArray &requestLine)
 	api->postForm("/v1/connect/token", form, [this, page = QPointer<QTcpSocket>(socket)](int, const QJsonDocument &body, const QString &error) {
 		if (!error.isEmpty()) {
 			reply_page(page, 200, tr("OBS could not finish signing in: %1").arg(error));
-			finish({}, {}, error);
+			finish({}, {}, {}, error);
 			return;
 		}
 		reply_page(page, 200, tr("Signed in. You can close this tab and go back to OBS."), true);
 		const QJsonObject o = body.object();
-		finish(o.value("access_token").toString(), o.value("account").toObject().value("name").toString(), {});
+		finish(o.value("access_token").toString(), o.value("account").toObject().value("name").toString(),
+		       Workspace::fromJson(o.value("workspace")), {});
 	});
 }
 
-void ConnectLogin::finish(const QString &key, const QString &account, const QString &error)
+void ConnectLogin::finish(const QString &key, const QString &account, const Workspace &workspace, const QString &error)
 {
 	if (done)
 		return;
 	done = true;
 	timeout.stop();
 	server.close();
-	emit finished(key, account, error);
+	emit finished(key, account, workspace, error);
 }

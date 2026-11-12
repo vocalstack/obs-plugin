@@ -132,6 +132,7 @@ Dock::Dock(QWidget *parent)
 	  settings(Settings::load()),
 	  session(new Session(api, &settings, this)),
 	  login(new ConnectLogin(api, this)),
+	  workspaceLogin(new ConnectLogin(api, this)),
 	  updater(new Updater(api, this)),
 	  pages(new QStackedWidget(this))
 {
@@ -160,6 +161,8 @@ Dock::Dock(QWidget *parent)
 	// Captions show always, in the language spoken.
 	settings.captionLanguage.clear();
 	settings.showCaptions = true;
+	if (!settings.workspaceIconVersion.isEmpty() && !workspaceIcon.loadFromData(Settings::loadWorkspaceIcon()))
+		settings.workspaceIconVersion.clear(); // the file is gone: fetched again
 	pages->addWidget(buildSignedOut());
 	pages->addWidget(buildSettings());
 	pages->addWidget(buildSignedIn());
@@ -170,10 +173,10 @@ Dock::Dock(QWidget *parent)
 	connect(updater, &Updater::changed, this, &Dock::showUpdate);
 	updater->setMayInstall([this]() { return session->state() == Session::State::Idle; });
 	connect(login, &ConnectLogin::finished, this,
-		[this](const QString &key, const QString &account, const QString &error) {
+		[this](const QString &key, const QString &account, const Workspace &workspace, const QString &error) {
 			setSigningIn(false);
 			if (!key.isEmpty()) {
-				signedIn(key, account);
+				signedIn(key, account, workspace, true);
 				// Back from the browser: OBS comes to the front.
 				window()->raise();
 				window()->activateWindow();
@@ -181,6 +184,19 @@ Dock::Dock(QWidget *parent)
 				signInStatus->setText(error);
 				set_level(signInStatus, error.isEmpty() ? "" : "error");
 			}
+		});
+	connect(workspaceLogin, &ConnectLogin::finished, this,
+		[this](const QString &key, const QString &account, const Workspace &workspace, const QString &error) {
+			changingWorkspace = false;
+			if (key.isEmpty()) {
+				// Cancelled or failed: the key and workspace in use stay.
+				workspaceError = error;
+				showWorkspace();
+				return;
+			}
+			window()->raise();
+			window()->activateWindow();
+			workspaceChosen(key, account, workspace);
 		});
 	connect(api, &Api::unauthorized, this,
 		[this]() { signOut(tr("VocalStack no longer accepts this sign-in. Sign in again.")); });
@@ -213,7 +229,7 @@ Dock::Dock(QWidget *parent)
 		[this]() { return settings.spokenLanguage; }, this);
 
 	api->setKey(settings.apiKey);
-	showSignedIn(!settings.apiKey.isEmpty());
+	showSignedIn(!settings.apiKey.isEmpty(), false);
 	onState(session->state());
 }
 
@@ -728,11 +744,18 @@ QWidget *Dock::buildSignedIn()
 	pv->addWidget(ui::rule());
 	pv->addSpacing(6);
 	auto *foot = new QHBoxLayout;
+	foot->setSpacing(6);
+	footMark = new ui::WorkspaceMark(18);
+	footMark->hide();
 	auto *account = new ui::ElidedLabel;
 	account->setProperty("role", "muted");
 	accountLabel = account;
 	auto *settingsButton = ui::linkButton(QStringLiteral("⚙︎ ") + tr("Settings"));
-	connect(settingsButton, &QToolButton::clicked, this, [this]() { pages->setCurrentIndex(SettingsPage); });
+	connect(settingsButton, &QToolButton::clicked, this, [this]() {
+		pages->setCurrentIndex(SettingsPage);
+		refreshWorkspace();
+	});
+	foot->addWidget(footMark, 0, Qt::AlignVCenter);
 	foot->addWidget(account, 1);
 	foot->addWidget(settingsButton);
 	pv->addLayout(foot);
@@ -885,6 +908,42 @@ QWidget *Dock::buildSettings()
 	static_cast<QVBoxLayout *>(static_cast<QHBoxLayout *>(aboutRow->layout())->itemAt(0)->layout())
 		->addWidget(checkUpdatesResult);
 	ab->addRow(aboutRow);
+
+	// Workspace: where the key works, and Change for another one. Shown
+	// once VocalStack has named the workspace.
+	workspaceSection = new QWidget;
+	auto *wsv = new QVBoxLayout(workspaceSection);
+	wsv->setContentsMargins(0, GAP_SECTION - GAP_LABEL, 0, 0);
+	wsv->setSpacing(v->spacing());
+	wsv->addWidget(ui::eyebrow(tr("Workspace")));
+	auto *wsCard = new ui::Card;
+	wsv->addWidget(wsCard);
+	auto *wsRow = new QWidget;
+	auto *wsh = new QHBoxLayout(wsRow);
+	wsh->setContentsMargins(0, 0, 0, 0);
+	wsh->setSpacing(12);
+	workspaceMark = new ui::WorkspaceMark(32);
+	wsh->addWidget(workspaceMark, 0, Qt::AlignVCenter);
+	auto *wsTexts = new QVBoxLayout;
+	wsTexts->setSpacing(2);
+	workspaceName = new ui::ElidedLabel;
+	workspaceName->setElideMode(Qt::ElideRight);
+	QFont wsFont = workspaceName->font();
+	wsFont.setWeight(QFont::DemiBold);
+	workspaceName->setFont(wsFont);
+	wsTexts->addWidget(workspaceName);
+	workspaceNote = ui::muted();
+	workspaceNote->hide();
+	wsTexts->addWidget(workspaceNote);
+	wsh->addLayout(wsTexts, 1);
+	changeWorkspaceButton = new QPushButton(tr("Change"));
+	changeWorkspaceButton->setProperty("role", "secondary");
+	changeWorkspaceButton->setAccessibleName(tr("Change workspace"));
+	connect(changeWorkspaceButton, &QPushButton::clicked, this, &Dock::changeWorkspace);
+	wsh->addWidget(changeWorkspaceButton, 0, Qt::AlignVCenter);
+	wsCard->addRow(wsRow);
+	workspaceSection->hide();
+	v->addWidget(workspaceSection);
 
 	// Account.
 	auto *ac = section(tr("Account"));
@@ -1080,6 +1139,7 @@ void Dock::onState(Session::State s)
 		w->setEnabled(idle);
 	settingsLiveNote->setVisible(!idle);
 	signOutNote->setVisible(!idle);
+	showWorkspace();
 	updateFollowHint();
 	updateLinks();
 	showUpdate(); // idle again: an update waiting may install
@@ -1287,13 +1347,19 @@ void Dock::showUpdate()
 
 void Dock::showSignedIn(bool in)
 {
-	pages->setCurrentIndex(in ? Main : SignedOut);
+	showSignedIn(in, false);
+}
+
+void Dock::showSignedIn(bool in, bool stay)
+{
+	if (!stay)
+		pages->setCurrentIndex(in ? Main : SignedOut);
+	showWorkspace();
 	if (!in)
 		return;
 	const QString who = settings.account.isEmpty() ? tr("an API key") : settings.account;
-	static_cast<ui::ElidedLabel *>(accountLabel)
-		->setFullText(settings.account.isEmpty() ? tr("Signed in with an API key") : settings.account);
 	settingsAccount->setText(tr("Signed in as <b>%1</b>").arg(who.toHtmlEscaped()));
+	refreshWorkspace();
 	loadLists();
 	loadBroadcasts();
 	session->refreshLimits();
@@ -1303,14 +1369,177 @@ void Dock::showSignedIn(bool in)
 	updater->check();
 }
 
-void Dock::signedIn(const QString &key, const QString &account)
+void Dock::signedIn(const QString &key, const QString &account, const Workspace &workspace, bool viaConnect)
 {
 	settings.apiKey = key;
 	settings.account = account;
+	settings.viaConnect = viaConnect;
 	settings.save();
 	api->setKey(key);
+	setWorkspace(workspace);
 	signInStatus->clear();
 	showSignedIn(true);
+	warm->refresh();
+}
+
+// ---------------------------------------------------------------- workspace
+
+void Dock::setWorkspace(const Workspace &w)
+{
+	if (w != settings.workspace) {
+		settings.workspace = w;
+		settings.save();
+	}
+	// The link is signed again every month; the icon is another one only
+	// when its version is.
+	const QString want = w.iconVersion();
+	if (want != settings.workspaceIconVersion && (!workspaceIcon.isNull() || !settings.workspaceIconVersion.isEmpty())) {
+		workspaceIcon = QImage();
+		settings.workspaceIconVersion.clear();
+		settings.save();
+		Settings::saveWorkspaceIcon(QByteArray());
+	}
+	if (want.isEmpty()) {
+		workspaceIconWanted.clear();
+	} else if (workspaceIcon.isNull() && workspaceIconWanted != want) {
+		workspaceIconWanted = want;
+		api->fetch(w.iconUrl, [this, want](const QByteArray &png) {
+			if (workspaceIconWanted != want)
+				return;
+			workspaceIconWanted.clear();
+			QImage image;
+			// Not fetched or not a picture: the initials stay, and the
+			// next check asks again.
+			if (png.isEmpty() || !image.loadFromData(png) || settings.workspace.iconVersion() != want)
+				return;
+			workspaceIcon = image;
+			settings.workspaceIconVersion = want;
+			settings.save();
+			Settings::saveWorkspaceIcon(png);
+			showWorkspace();
+		});
+	}
+	showWorkspace();
+}
+
+void Dock::refreshWorkspace()
+{
+	const QString key = settings.apiKey;
+	if (key.isEmpty())
+		return;
+	api->get("/v1/me", [this, key](int, const QJsonDocument &doc, const QString &error) {
+		if (!error.isEmpty() || key != settings.apiKey)
+			return;
+		// An older VocalStack names no workspace: what is shown stays.
+		const Workspace w = Workspace::fromJson(doc.object().value("workspace"));
+		if (w.known())
+			setWorkspace(w);
+	});
+}
+
+// The footer and Settings → Workspace. Until VocalStack has named the
+// workspace, both are as they were before workspaces: the account's name.
+void Dock::showWorkspace()
+{
+	const Workspace &w = settings.workspace;
+	const bool known = w.known() && !settings.apiKey.isEmpty();
+	auto *foot = static_cast<ui::ElidedLabel *>(accountLabel);
+	footMark->setWorkspace(w, workspaceIcon);
+	footMark->setVisible(known);
+	if (known) {
+		foot->setFullText(w.name);
+		foot->setToolTip(tr("Workspace: %1").arg(w.name));
+		foot->setAccessibleName(tr("Workspace: %1").arg(w.name));
+	} else {
+		foot->setFullText(settings.account.isEmpty() ? tr("Signed in with an API key") : settings.account);
+		foot->setAccessibleName(QString());
+	}
+	workspaceSection->setVisible(known);
+	workspaceMark->setWorkspace(w, workspaceIcon);
+	workspaceName->setFullText(w.name);
+	workspaceName->setAccessibleName(tr("Workspace: %1").arg(w.name));
+
+	// A pasted key shows its workspace; only a sign-in with VocalStack can
+	// be run again for another one.
+	const bool idle = session->state() == Session::State::Idle;
+	changeWorkspaceButton->setVisible(settings.viaConnect);
+	changeWorkspaceButton->setText(changingWorkspace ? tr("Cancel") : tr("Change"));
+	changeWorkspaceButton->setAccessibleName(changingWorkspace ? tr("Cancel changing the workspace")
+								   : tr("Change workspace"));
+	changeWorkspaceButton->setEnabled(changingWorkspace || idle);
+	QString note;
+	const char *level = "";
+	if (changingWorkspace) {
+		note = tr("Choose a workspace in your browser…");
+	} else if (!workspaceError.isEmpty()) {
+		note = workspaceError;
+		level = "error";
+	} else if (!idle && settings.viaConnect) {
+		note = tr("Stop transcribing to change the workspace.");
+	}
+	workspaceNote->setText(note);
+	set_level(workspaceNote, level);
+	workspaceNote->setVisible(!note.isEmpty());
+}
+
+void Dock::changeWorkspace()
+{
+	if (changingWorkspace) {
+		workspaceLogin->cancel();
+		return;
+	}
+	workspaceError.clear();
+	if (session->state() != Session::State::Idle) {
+		showWorkspace(); // says to stop transcribing first
+		return;
+	}
+	changingWorkspace = true;
+	showWorkspace();
+	workspaceLogin->start();
+}
+
+// A key belongs to one workspace, so another workspace is another key.
+// What the plugin kept from the old workspace is forgotten, as on sign-out;
+// what the person set up in the dock stays.
+void Dock::workspaceChosen(const QString &key, const QString &account, const Workspace &workspace)
+{
+	if (settings.apiKey.isEmpty())
+		return;
+	if (session->state() != Session::State::Idle) {
+		workspaceError = tr("The workspace was not changed: transcribing started meanwhile. Stop transcribing, "
+				    "then change the workspace.");
+		showWorkspace();
+		return;
+	}
+	workspaceError.clear();
+	// The same workspace picked again: only the key is new.
+	const bool same = workspace.known() && workspace.id == settings.workspace.id;
+	if (!same) {
+		// Sent with the old key, which made the stream key.
+		if (!settings.streamKeyId.isEmpty())
+			api->delQuiet("/v1/rtmp/keys/" + settings.streamKeyId,
+				      [](int, const QJsonDocument &, const QString &) {});
+		settings.streamKey.clear();
+		settings.streamKeyId.clear();
+		settings.serverUrl.clear();
+		settings.transcriptionId.clear();
+		settings.broadcastId.clear();
+		settings.attachedBroadcastId.clear();
+		settings.maxDurationS = 0;
+		broadcastObjects.clear();
+		broadcastOrder.clear();
+		appliedBroadcastId.clear();
+		fillBroadcasts();
+		showBroadcastLink();
+		loadScripts();
+	}
+	settings.apiKey = key;
+	settings.account = account;
+	settings.viaConnect = true;
+	settings.save();
+	api->setKey(key);
+	setWorkspace(workspace);
+	showSignedIn(true, true);
 	warm->refresh();
 }
 
@@ -1347,7 +1576,7 @@ void Dock::useKey()
 			return;
 		}
 		keyEdit->clear();
-		signedIn(key, me.value("displayName").toString());
+		signedIn(key, me.value("displayName").toString(), Workspace::fromJson(me.value("workspace")), false);
 	});
 }
 
@@ -1356,6 +1585,11 @@ void Dock::useKey()
 void Dock::signOut(const QString &why)
 {
 	session->stop();
+	workspaceLogin->cancel();
+	workspaceError.clear();
+	workspaceIcon = QImage();
+	workspaceIconWanted.clear();
+	Settings::saveWorkspaceIcon(QByteArray());
 	if (!settings.streamKeyId.isEmpty() && why.isEmpty()) // a refused key cannot remove anything
 		api->del("/v1/rtmp/keys/" + settings.streamKeyId, [](int, const QJsonDocument &, const QString &) {});
 	const Settings kept = settings;

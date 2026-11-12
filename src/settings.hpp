@@ -1,5 +1,8 @@
 #pragma once
 
+#include "workspace.hpp"
+
+#include <QByteArray>
 #include <QString>
 
 // What the plugin keeps between runs, in OBS's config folder
@@ -8,6 +11,14 @@
 struct Settings {
 	QString apiKey;
 	QString account;
+	// Signed in with VocalStack (Connect), not with a pasted key: Settings
+	// offers Change, which signs in again for another workspace. Settings
+	// kept from before this was recorded count as Connect.
+	bool viaConnect = false;
+	// The workspace the key belongs to, as the API last named it, so it
+	// shows at once next time; and which icon the icon file holds.
+	Workspace workspace;
+	QString workspaceIconVersion;
 	// The app stream key this plugin made (POST /v1/rtmp/keys).
 	QString streamKey, streamKeyId, serverUrl;
 	// The live transcription each Start records into.
@@ -43,4 +54,9 @@ struct Settings {
 
 	static Settings load();
 	void save() const;
+
+	// The workspace's icon as downloaded (workspace-icon.png beside the
+	// settings); saving nothing removes it.
+	static QByteArray loadWorkspaceIcon();
+	static void saveWorkspaceIcon(const QByteArray &png);
 };

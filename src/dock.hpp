@@ -5,6 +5,7 @@
 
 #include <QElapsedTimer>
 #include <QHash>
+#include <QImage>
 #include <QJsonObject>
 #include <QWidget>
 
@@ -33,6 +34,7 @@ class LanguageChip;
 class ReloadingCombo;
 class Segmented;
 class Switch;
+class WorkspaceMark;
 } // namespace ui
 
 // The VocalStack dock: sign-in, then what to send and where, Start/Stop,
@@ -81,7 +83,20 @@ private:
 	QWidget *pageHeader(QLabel **titleLabel, QLabel **subtitleLabel);
 	void applyTheme();
 	void showSignedIn(bool in);
-	void signedIn(const QString &key, const QString &account);
+	// `stay`: the page on screen stays (Settings, after a workspace change).
+	void showSignedIn(bool in, bool stay);
+	void signedIn(const QString &key, const QString &account, const Workspace &workspace, bool viaConnect);
+	// The workspace the key belongs to, as the API just named it: kept, and
+	// its icon fetched when it is another one than the icon kept.
+	void setWorkspace(const Workspace &workspace);
+	// Asks VocalStack which workspace the key belongs to (a rename or a new
+	// icon in the dashboard reaches the plugin this way).
+	void refreshWorkspace();
+	void showWorkspace();
+	// Settings' Change: the consent screen again, where another workspace
+	// is picked; its answer is a new key that takes this one's place.
+	void changeWorkspace();
+	void workspaceChosen(const QString &key, const QString &account, const Workspace &workspace);
 	void signOut(const QString &why);
 	void useKey();
 	void setSigningIn(bool waiting);
@@ -118,6 +133,13 @@ private:
 	Settings settings;
 	Session *session;
 	ConnectLogin *login;
+	// Change's own sign-in, so cancelling it leaves the key in use alone.
+	ConnectLogin *workspaceLogin;
+	bool changingWorkspace = false;
+	QString workspaceError;
+	// The workspace's own icon (null: none), and the icon being fetched.
+	QImage workspaceIcon;
+	QString workspaceIconWanted;
 	CaptionOverlay *overlay = nullptr;
 	WarmPing *warm = nullptr;
 	Updater *updater;
@@ -149,6 +171,7 @@ private:
 
 	// Main page.
 	QLabel *accountLabel;
+	ui::WorkspaceMark *footMark;
 	ui::ReloadingCombo *broadcastBox;
 	ui::LanguageChip *spokenBox;
 	// Auto detect or Custom, beside the chip; the language Custom goes back
@@ -212,6 +235,11 @@ private:
 	QPushButton *checkUpdatesButton;
 	QLabel *checkUpdatesResult, *settingsAccount, *settingsLiveNote;
 	QPushButton *signOutButton;
+	QWidget *workspaceSection;
+	ui::WorkspaceMark *workspaceMark;
+	ui::ElidedLabel *workspaceName;
+	QLabel *workspaceNote;
+	QPushButton *changeWorkspaceButton;
 	QToolButton *captionColorButton, *captionColorReset;
 	void showCaptionColor();
 	QLabel *signOutNote;

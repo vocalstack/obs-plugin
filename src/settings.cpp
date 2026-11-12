@@ -4,9 +4,20 @@
 #include <obs.hpp>
 #include <util/platform.h>
 
+#include <QFile>
+#include <QSaveFile>
+
 static QString path()
 {
 	char *p = obs_module_config_path("settings.json");
+	QString s = QString::fromUtf8(p);
+	bfree(p);
+	return s;
+}
+
+static QString icon_path()
+{
+	char *p = obs_module_config_path("workspace-icon.png");
 	QString s = QString::fromUtf8(p);
 	bfree(p);
 	return s;
@@ -26,10 +37,17 @@ Settings Settings::load()
 	obs_data_set_default_bool(d, "followObs", true);
 	obs_data_set_default_bool(d, "showCaptions", true);
 	obs_data_set_default_bool(d, "autoUpdate", true);
+	obs_data_set_default_bool(d, "viaConnect", true);
 	obs_data_set_default_string(d, "speakerLabels", "auto");
 	obs_data_set_default_string(d, "latencyMode", "auto");
 	s.apiKey = str(d, "apiKey");
 	s.account = str(d, "account");
+	s.viaConnect = obs_data_get_bool(d, "viaConnect");
+	s.workspace.id = str(d, "workspaceId");
+	s.workspace.name = str(d, "workspaceName");
+	s.workspace.personal = obs_data_get_bool(d, "workspacePersonal");
+	s.workspace.iconUrl = str(d, "workspaceIconUrl");
+	s.workspaceIconVersion = str(d, "workspaceIconVersion");
 	s.streamKey = str(d, "streamKey");
 	s.streamKeyId = str(d, "streamKeyId");
 	s.serverUrl = str(d, "serverUrl");
@@ -61,6 +79,12 @@ void Settings::save() const
 	auto set = [&](const char *name, const QString &v) { obs_data_set_string(d, name, v.toUtf8().constData()); };
 	set("apiKey", apiKey);
 	set("account", account);
+	obs_data_set_bool(d, "viaConnect", viaConnect);
+	set("workspaceId", workspace.id);
+	set("workspaceName", workspace.name);
+	obs_data_set_bool(d, "workspacePersonal", workspace.personal);
+	set("workspaceIconUrl", workspace.iconUrl);
+	set("workspaceIconVersion", workspaceIconVersion);
 	set("streamKey", streamKey);
 	set("streamKeyId", streamKeyId);
 	set("serverUrl", serverUrl);
@@ -81,4 +105,24 @@ void Settings::save() const
 	obs_data_set_bool(d, "dockShown", dockShown);
 	set("captionBackground", captionBackground);
 	obs_data_save_json_safe(d, path().toUtf8().constData(), "tmp", "bak");
+}
+
+QByteArray Settings::loadWorkspaceIcon()
+{
+	QFile f(icon_path());
+	return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
+void Settings::saveWorkspaceIcon(const QByteArray &png)
+{
+	if (png.isEmpty()) {
+		QFile::remove(icon_path());
+		return;
+	}
+	char *dir = obs_module_config_path("");
+	os_mkdirs(dir);
+	bfree(dir);
+	QSaveFile f(icon_path());
+	if (f.open(QIODevice::WriteOnly) && f.write(png) == png.size())
+		f.commit();
 }

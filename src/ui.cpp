@@ -10,6 +10,7 @@
 #include <QButtonGroup>
 #include <QHBoxLayout>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPointer>
 #include <QPushButton>
 #include <QStyle>
@@ -529,6 +530,88 @@ void Card::addLayoutRow(QLayout *row)
 	pad->setContentsMargins(0, 10, 0, 10);
 	pad->addLayout(row);
 	rows->addLayout(pad);
+}
+
+WorkspaceMark::WorkspaceMark(int side_, QWidget *parent) : QWidget(parent), side(side_)
+{
+	setFixedSize(side, side);
+}
+
+void WorkspaceMark::setWorkspace(const Workspace &w, const QImage &i)
+{
+	workspace = w;
+	icon = i;
+	update();
+}
+
+void WorkspaceMark::paintEvent(QPaintEvent *)
+{
+	QPainter p(this);
+	p.setRenderHint(QPainter::Antialiasing);
+	p.setRenderHint(QPainter::SmoothPixmapTransform);
+	const QRectF box(0, 0, side, side);
+	const qreal radius = qRound(side * 0.29);
+	QPainterPath tile;
+	tile.addRoundedRect(box, radius, radius);
+	QColor ink = palette().text().color();
+	auto inked = [ink](int alpha) {
+		QColor c = ink;
+		c.setAlpha(alpha);
+		return c;
+	};
+	auto hairline = [&]() {
+		p.setClipping(false);
+		p.setPen(QPen(inked(26), 1));
+		p.setBrush(Qt::NoBrush);
+		p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
+	};
+	p.setPen(Qt::NoPen);
+	if (!icon.isNull()) {
+		// The icon fills the square, cropped about its centre.
+		const int crop = qMin(icon.width(), icon.height());
+		const QRectF from((icon.width() - crop) / 2.0, (icon.height() - crop) / 2.0, crop, crop);
+		p.setClipPath(tile);
+		p.fillRect(box, inked(15));
+		p.drawImage(box, icon, from);
+		hairline();
+		return;
+	}
+	if (workspace.personal) {
+		p.fillPath(tile, inked(23));
+		// A person, as the dashboard's icon: a head over shoulders, on a
+		// 24-unit grid, drawn at 55 % of the tile.
+		const qreal unit = side * 0.55 / 24.0;
+		QPainterPath person;
+		person.moveTo(20, 21);
+		person.lineTo(20, 19);
+		person.arcTo(QRectF(12, 15, 8, 8), 0, 90);
+		person.lineTo(8, 15);
+		person.arcTo(QRectF(4, 15, 8, 8), 90, 90);
+		person.lineTo(4, 21);
+		person.addEllipse(QPointF(12, 7), 4, 4);
+		p.save();
+		p.translate((side - 24 * unit) / 2.0, (side - 24 * unit) / 2.0);
+		p.scale(unit, unit);
+		p.setPen(QPen(inked(178), qMax(1.6, 1.1 / unit), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+		p.setBrush(Qt::NoBrush);
+		p.drawPath(person);
+		p.restore();
+		hairline();
+		return;
+	}
+	// Initials in the workspace's colour on the same colour at 22 %; the
+	// colour is deeper on a light theme, to stay readable.
+	const bool dark = palette().window().color().lightness() < 128;
+	const QColor colour = QColor::fromHsvF(float(workspace.hue() / 360.0), dark ? 0.5f : 0.62f, dark ? 0.86f : 0.5f);
+	QColor wash = colour;
+	wash.setAlphaF(0.22f);
+	p.fillPath(tile, wash);
+	QFont f = font();
+	f.setPixelSize(qMax(7, qRound(side * 0.39)));
+	f.setWeight(QFont::DemiBold);
+	p.setFont(f);
+	p.setPen(colour);
+	p.drawText(box, Qt::AlignCenter, workspace.initials());
 }
 
 QWidget *settingRow(const QString &name, const QString &note, QWidget *control)

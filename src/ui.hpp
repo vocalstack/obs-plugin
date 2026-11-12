@@ -1,7 +1,10 @@
 #pragma once
 
+#include "workspace.hpp"
+
 #include <QDateTime>
 #include <QHash>
+#include <QImage>
 
 // The dock's visual system: VocalStack's tokens (from the web app's
 // ds.css) for OBS's dark and light themes, one stylesheet that styles
@@ -142,6 +145,27 @@ signals:
 protected:
 	void mousePressEvent(QMouseEvent *event) override;
 	void keyPressEvent(QKeyEvent *event) override;
+};
+
+// A workspace's mark, as the dashboard draws it: its own icon in a rounded
+// square, a person for the personal workspace, else its initials on a tile
+// of its colour.
+class WorkspaceMark : public QWidget {
+	Q_OBJECT
+
+public:
+	explicit WorkspaceMark(int side, QWidget *parent = nullptr);
+	// `icon` null: the workspace has no icon of its own (or not yet).
+	void setWorkspace(const Workspace &workspace, const QImage &icon);
+	QSize sizeHint() const override { return QSize(side, side); }
+
+protected:
+	void paintEvent(QPaintEvent *event) override;
+
+private:
+	Workspace workspace;
+	QImage icon;
+	int side;
 };
 
 // A setting as a row: its name and a note on the left, its control on the
