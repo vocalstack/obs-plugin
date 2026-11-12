@@ -51,6 +51,9 @@ public:
 	// neither runs.
 	void obsOutputStarted();
 	void obsOutputStopped();
+	// The replay buffer or the virtual camera started or stopped: whether
+	// OBS may be restarted changed.
+	void obsActivityChanged();
 	// OBS is closing: end the session.
 	void shutdown();
 	void watchClose(QWidget *mainWindow);
@@ -118,6 +121,12 @@ private:
 	void updateFollowHint();
 	void updateLinks();
 	void showUpdate();
+	// What must stop before OBS may be restarted, as a sentence; empty when
+	// nothing is in the way.
+	QString restartBlocker() const;
+	// Restart OBS, after an update was installed: OBS is asked to quit as
+	// its own Quit does, and starts again once it has (shutdown()).
+	void restartObs();
 	// A broadcast was chosen: its capture settings become the dock's.
 	void applyBroadcastDefaults(const QString &id);
 	// The chosen broadcast's scripts not yet recorded, and which one Start
@@ -227,6 +236,12 @@ private:
 	// "Update now" was clicked: the update installs once nothing is being
 	// transcribed, even with automatic updates off.
 	bool updateWanted = false;
+	// Restart OBS, under the notice once the update is installed (macOS and
+	// Linux). Clicked: OBS was asked to quit and starts again when it does;
+	// the wish lapses when OBS is still open half a minute later.
+	QPushButton *restartButton;
+	QTimer *restartLapse;
+	bool restartWanted = false;
 
 	// Settings page.
 	QLineEdit *nameEdit;

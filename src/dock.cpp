@@ -327,7 +327,7 @@ QWidget *Dock::buildSignedOut()
 	signInButton->setProperty("role", "primary");
 	connect(signInButton, &QPushButton::clicked, this, [this]() {
 		setSigningIn(true);
-		login->start();
+		login->start(settings.workspace.id);
 	});
 	v->addWidget(signInButton);
 	v->addSpacing(8);
@@ -724,6 +724,19 @@ QWidget *Dock::buildSignedIn()
 		showUpdate();
 	});
 	updateCallout->addAction(updateButton);
+	restartButton = new QPushButton(tr("Restart OBS"));
+	restartButton->setProperty("role", "secondary");
+	restartButton->hide();
+	connect(restartButton, &QPushButton::clicked, this, &Dock::restartObs);
+	updateCallout->addAction(restartButton);
+	restartLapse = new QTimer(this);
+	restartLapse->setSingleShot(true);
+	restartLapse->setInterval(30 * 1000);
+	connect(restartLapse, &QTimer::timeout, this, [this]() {
+		// OBS is still open: its quit was cancelled.
+		restartWanted = false;
+		showUpdate();
+	});
 	connect(updateCallout, &ui::Callout::dismissed, this, [this]() {
 		updateDismissed = updateNoticeText;
 		showUpdate();
@@ -793,8 +806,57 @@ QWidget *Dock::buildSettings()
 		return card;
 	};
 
+	// Workspace, first: where the key works, and Change for another one.
+	// Shown once VocalStack has named the workspace.
+	workspaceSection = new QWidget;
+	auto *wsv = new QVBoxLayout(workspaceSection);
+	wsv->setContentsMargins(0, 0, 0, GAP_SECTION - GAP_LABEL);
+	wsv->setSpacing(v->spacing());
+	wsv->addWidget(ui::eyebrow(tr("Workspace")));
+	auto *wsCard = new ui::Card;
+	wsv->addWidget(wsCard);
+	auto *wsRow = new QWidget;
+	auto *wsh = new QHBoxLayout(wsRow);
+	wsh->setContentsMargins(0, 0, 0, 0);
+	wsh->setSpacing(12);
+	workspaceMark = new ui::WorkspaceMark(32);
+	wsh->addWidget(workspaceMark, 0, Qt::AlignVCenter);
+	auto *wsTexts = new QVBoxLayout;
+	wsTexts->setSpacing(2);
+	workspaceName = new ui::ElidedLabel;
+	workspaceName->setElideMode(Qt::ElideRight);
+	QFont wsFont = workspaceName->font();
+	wsFont.setWeight(QFont::DemiBold);
+	workspaceName->setFont(wsFont);
+	wsTexts->addWidget(workspaceName);
+	workspaceNote = ui::muted();
+	workspaceNote->hide();
+	wsTexts->addWidget(workspaceNote);
+	wsh->addLayout(wsTexts, 1);
+	changeWorkspaceButton = new QPushButton(tr("Change"));
+	changeWorkspaceButton->setProperty("role", "secondary");
+	changeWorkspaceButton->setAccessibleName(tr("Change workspace"));
+	connect(changeWorkspaceButton, &QPushButton::clicked, this, &Dock::changeWorkspace);
+	wsh->addWidget(changeWorkspaceButton, 0, Qt::AlignVCenter);
+	wsCard->addRow(wsRow);
+	workspaceSection->hide();
+	v->addWidget(workspaceSection);
+
+	// Account, under it.
+	auto *ac = section(tr("Account"), true);
+	signOutButton = new QPushButton(tr("Sign out"));
+	signOutButton->setProperty("role", "secondary");
+	connect(signOutButton, &QPushButton::clicked, this, [this]() { signOut(QString()); });
+	auto *accountRow = ui::settingRow(QString(), QString(), signOutButton);
+	auto *accountTexts = static_cast<QVBoxLayout *>(static_cast<QHBoxLayout *>(accountRow->layout())->itemAt(0)->layout());
+	settingsAccount = static_cast<QLabel *>(accountTexts->itemAt(0)->widget());
+	signOutNote = ui::muted(tr("Stop transcribing to sign out."));
+	signOutNote->hide();
+	accountTexts->addWidget(signOutNote);
+	ac->addRow(accountRow);
+
 	// Transcription.
-	auto *tx = section(tr("Transcription"), true);
+	auto *tx = section(tr("Transcription"));
 	auto *nameBlock = new QVBoxLayout;
 	nameBlock->setSpacing(GAP_LABEL);
 	nameBlock->addWidget(new QLabel(tr("Name")));
@@ -890,6 +952,11 @@ QWidget *Dock::buildSettings()
 	checkUpdatesButton = new QPushButton(tr("Check for updates"));
 	checkUpdatesButton->setProperty("role", "secondary");
 	connect(checkUpdatesButton, &QPushButton::clicked, this, [this]() {
+		// An update installed: this is Restart OBS.
+		if (updater->step() == Updater::Step::Installed && Updater::canRestart()) {
+			restartObs();
+			return;
+		}
 		// A newer release waiting: this is Update now.
 		if (updater->age() != Updater::Age::Current && updater->step() == Updater::Step::Idle) {
 			updateWanted = true;
@@ -909,54 +976,6 @@ QWidget *Dock::buildSettings()
 		->addWidget(checkUpdatesResult);
 	ab->addRow(aboutRow);
 
-	// Workspace: where the key works, and Change for another one. Shown
-	// once VocalStack has named the workspace.
-	workspaceSection = new QWidget;
-	auto *wsv = new QVBoxLayout(workspaceSection);
-	wsv->setContentsMargins(0, GAP_SECTION - GAP_LABEL, 0, 0);
-	wsv->setSpacing(v->spacing());
-	wsv->addWidget(ui::eyebrow(tr("Workspace")));
-	auto *wsCard = new ui::Card;
-	wsv->addWidget(wsCard);
-	auto *wsRow = new QWidget;
-	auto *wsh = new QHBoxLayout(wsRow);
-	wsh->setContentsMargins(0, 0, 0, 0);
-	wsh->setSpacing(12);
-	workspaceMark = new ui::WorkspaceMark(32);
-	wsh->addWidget(workspaceMark, 0, Qt::AlignVCenter);
-	auto *wsTexts = new QVBoxLayout;
-	wsTexts->setSpacing(2);
-	workspaceName = new ui::ElidedLabel;
-	workspaceName->setElideMode(Qt::ElideRight);
-	QFont wsFont = workspaceName->font();
-	wsFont.setWeight(QFont::DemiBold);
-	workspaceName->setFont(wsFont);
-	wsTexts->addWidget(workspaceName);
-	workspaceNote = ui::muted();
-	workspaceNote->hide();
-	wsTexts->addWidget(workspaceNote);
-	wsh->addLayout(wsTexts, 1);
-	changeWorkspaceButton = new QPushButton(tr("Change"));
-	changeWorkspaceButton->setProperty("role", "secondary");
-	changeWorkspaceButton->setAccessibleName(tr("Change workspace"));
-	connect(changeWorkspaceButton, &QPushButton::clicked, this, &Dock::changeWorkspace);
-	wsh->addWidget(changeWorkspaceButton, 0, Qt::AlignVCenter);
-	wsCard->addRow(wsRow);
-	workspaceSection->hide();
-	v->addWidget(workspaceSection);
-
-	// Account.
-	auto *ac = section(tr("Account"));
-	signOutButton = new QPushButton(tr("Sign out"));
-	signOutButton->setProperty("role", "secondary");
-	connect(signOutButton, &QPushButton::clicked, this, [this]() { signOut(QString()); });
-	auto *accountRow = ui::settingRow(QString(), QString(), signOutButton);
-	auto *accountTexts = static_cast<QVBoxLayout *>(static_cast<QHBoxLayout *>(accountRow->layout())->itemAt(0)->layout());
-	settingsAccount = static_cast<QLabel *>(accountTexts->itemAt(0)->widget());
-	signOutNote = ui::muted(tr("Stop transcribing to sign out."));
-	signOutNote->hide();
-	accountTexts->addWidget(signOutNote);
-	ac->addRow(accountRow);
 	v->addStretch(1);
 
 	outer->addWidget(scrolling(content), 1);
@@ -1167,6 +1186,7 @@ void Dock::obsOutputStarted()
 	if (settings.followObs && !settings.apiKey.isEmpty() && session->state() == Session::State::Idle)
 		startSession();
 	updateFollowHint();
+	obsActivityChanged();
 }
 
 void Dock::obsOutputStopped()
@@ -1174,6 +1194,7 @@ void Dock::obsOutputStopped()
 	if (settings.followObs && !obs_busy())
 		session->stop();
 	updateFollowHint();
+	obsActivityChanged();
 }
 
 void Dock::updateFollowHint()
@@ -1244,6 +1265,11 @@ void Dock::showUpdate()
 	const Updater::Age age = updater->age();
 	const Updater::Step step = updater->step();
 	const QString latest = updater->latest();
+	// Installed, and OBS can start again by itself: Restart OBS, or what to
+	// stop first.
+	const bool restartable = step == Updater::Step::Installed && Updater::canRestart();
+	const QString blocker = restartable ? restartBlocker() : QString();
+	const QString restartText = restartWanted ? tr("Restarting…") : tr("Restart OBS");
 	// Settings → About follows the update as it goes: the check's answer,
 	// the download and install with a spinner, then a check mark.
 	{
@@ -1259,6 +1285,7 @@ void Dock::showUpdate()
 												: tr("Installing %1…").arg(latest));
 		else if (installed)
 			about = step == Updater::Step::OnExit ? tr("✓ %1 is ready: quit OBS to finish installing it.").arg(latest)
+				: !blocker.isEmpty()      ? tr("✓ %1 is installed. %2").arg(latest, blocker)
 							      : tr("✓ %1 is installed. Restart OBS to use it.").arg(latest);
 		else if (waiting && updater->problem())
 			about = updater->message();
@@ -1276,8 +1303,11 @@ void Dock::showUpdate()
 			checkWanted = false;
 		checkUpdatesResult->setText(about);
 		set_level(checkUpdatesResult, waiting && updater->problem() ? "warn" : "");
-		checkUpdatesButton->setText(waiting && !updater->problem() ? tr("Update now") : tr("Check for updates"));
-		checkUpdatesButton->setEnabled(!working && step != Updater::Step::Checking && !installed);
+		checkUpdatesButton->setText(restartable ? restartText
+							: waiting && !updater->problem() ? tr("Update now")
+											 : tr("Check for updates"));
+		checkUpdatesButton->setEnabled(restartable ? blocker.isEmpty() && !restartWanted
+							   : !working && step != Updater::Step::Checking && !installed);
 	}
 	QString text = updater->message().toHtmlEscaped();
 	bool problem = updater->problem();
@@ -1319,16 +1349,21 @@ void Dock::showUpdate()
 	updateNoticeText = text;
 	const bool dismissed = !text.isEmpty() && text == updateDismissed && !working;
 	QString shown = text;
+	if (!blocker.isEmpty())
+		shown = tr("VocalStack for OBS %1 is installed. %2").arg(latest, blocker).toHtmlEscaped();
 	if (working)
 		shown = QStringLiteral("%1&nbsp;&nbsp;%2").arg(ui::SPINNER.at(updateSpinFrame % ui::SPINNER.size()), text);
 	else if (done)
 		shown = QStringLiteral("<span style='color:%1; font-weight:600;'>✓</span>&nbsp;&nbsp;%2")
-				.arg(ui::Theme::of(this).ok, text);
+				.arg(ui::Theme::of(this).ok, shown);
 	updateCallout->setTone(problem ? "warn" : "info");
 	updateCallout->setText(shown);
 	updateCallout->setDismissible(!working);
 	updateCallout->setVisible(!text.isEmpty() && !dismissed);
 	updateButton->setVisible(pending && !settings.autoUpdate && !updateWanted);
+	restartButton->setVisible(restartable);
+	restartButton->setText(restartText);
+	restartButton->setEnabled(blocker.isEmpty() && !restartWanted);
 	// An unsupported version does not start, and says why where Start is.
 	const bool blocked = age == Updater::Age::Unsupported && step != Updater::Step::Installed;
 	const bool idle = session->state() == Session::State::Idle;
@@ -1341,6 +1376,49 @@ void Dock::showUpdate()
 		set_level(idleStatus, "error");
 		idleStatus->show();
 	}
+}
+
+QString Dock::restartBlocker() const
+{
+	QStringList busy;
+	if (session->state() != Session::State::Idle)
+		busy << tr("transcribing");
+	if (obs_frontend_streaming_active())
+		busy << tr("streaming");
+	if (obs_frontend_recording_active())
+		busy << tr("recording");
+	if (obs_frontend_replay_buffer_active())
+		busy << tr("the replay buffer");
+	if (obs_frontend_virtualcam_active())
+		busy << tr("the virtual camera");
+	if (busy.isEmpty())
+		return {};
+	const QString last = busy.takeLast();
+	return tr("Stop %1 to restart OBS.").arg(busy.isEmpty() ? last : tr("%1 and %2").arg(busy.join(", "), last));
+}
+
+// OBS closes as from its own Quit, so it saves and asks what it would ask.
+// The new OBS is started from shutdown(), which runs only once OBS is
+// really quitting: a cancelled quit starts nothing.
+void Dock::restartObs()
+{
+	if (restartWanted || updater->step() != Updater::Step::Installed || !Updater::canRestart())
+		return;
+	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!main || !restartBlocker().isEmpty()) {
+		showUpdate(); // says what to stop first
+		return;
+	}
+	restartWanted = true;
+	restartLapse->start();
+	showUpdate();
+	QMetaObject::invokeMethod(main, "close", Qt::QueuedConnection);
+}
+
+void Dock::obsActivityChanged()
+{
+	if (updater->step() == Updater::Step::Installed)
+		showUpdate();
 }
 
 // ---------------------------------------------------------------- sign-in
@@ -1495,7 +1573,7 @@ void Dock::changeWorkspace()
 	}
 	changingWorkspace = true;
 	showWorkspace();
-	workspaceLogin->start();
+	workspaceLogin->start(settings.workspace.id);
 }
 
 // A key belongs to one workspace, so another workspace is another key.
@@ -2282,6 +2360,11 @@ void Dock::saveBroadcast()
 void Dock::shutdown()
 {
 	updater->finishOnExit();
+	if (restartWanted) {
+		restartWanted = false;
+		restartLapse->stop();
+		Updater::restartAfterExit();
+	}
 	warm->end();
 	login->cancel();
 	session->stop();

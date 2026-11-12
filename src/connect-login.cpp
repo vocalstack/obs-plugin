@@ -36,7 +36,7 @@ ConnectLogin::ConnectLogin(Api *api_, QObject *parent) : QObject(parent), api(ap
 		[this]() { finish({}, {}, {}, tr("Sign-in timed out. Try again.")); });
 }
 
-void ConnectLogin::start()
+void ConnectLogin::start(const QString &workspaceId)
 {
 	cancel();
 	if (!server.listen(QHostAddress::LocalHost, 0)) {
@@ -59,6 +59,8 @@ void ConnectLogin::start()
 	// picks from the account's existing broadcasts.
 	q.addQueryItem("scope", "read write recordings:publish");
 	q.addQueryItem("reach", "account");
+	if (!workspaceId.isEmpty())
+		q.addQueryItem("workspace", QString::fromLatin1(QUrl::toPercentEncoding(workspaceId)));
 	QUrl url(api->appBase() + "/connect");
 	url.setQuery(q);
 

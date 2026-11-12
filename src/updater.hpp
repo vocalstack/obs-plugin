@@ -34,6 +34,15 @@ public:
 	void install();
 	// OBS is quitting: finish a Windows update that waits for it.
 	void finishOnExit();
+	// Whether OBS can be started again by itself once it has quit: macOS
+	// (its .app, through `open`) and Linux (the same program). Not on
+	// Windows, where the update is copied in after OBS quits, behind
+	// Windows's permission prompt, nor inside Flatpak, Snap or an AppImage.
+	static bool canRestart();
+	// OBS is quitting and a restart was asked for: a helper that outlives
+	// OBS waits for this process to end (at most a minute, then gives up)
+	// and starts OBS again with the arguments it was started with.
+	static bool restartAfterExit();
 
 	QString latest() const { return latestVersion; }
 	Age age() const { return ageOf(latestVersion); }

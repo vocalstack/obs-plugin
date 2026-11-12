@@ -20,6 +20,8 @@ Read more about the [VocalStack live transcription plugin for OBS Studio](https:
 - **Updates install themselves**: when a newer release is out and nothing is being transcribed, the
   plugin installs it (macOS: the same signed package, into your Library; Linux: the .deb, after the
   desktop's password prompt; Windows: the zip, copied in when OBS quits) and asks for an OBS restart.
+  On macOS and Linux a **Restart OBS** button does it: OBS quits as from its own menu and starts again
+  (not while streaming, recording, the replay buffer, the virtual camera or a transcription is running).
   Turn that off in the dock and an **Update now** button appears instead. A version a minor behind is
   marked old; one a major behind no longer starts.
 - **Captions** over the preview name the speaker once more than one has been heard, follow corrections

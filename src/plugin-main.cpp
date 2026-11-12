@@ -76,6 +76,13 @@ static void on_frontend_event(enum obs_frontend_event event, void *)
 		if (dock)
 			dock->obsOutputStopped();
 		break;
+	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
+	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED:
+	case OBS_FRONTEND_EVENT_VIRTUALCAM_STARTED:
+	case OBS_FRONTEND_EVENT_VIRTUALCAM_STOPPED:
+		if (dock)
+			dock->obsActivityChanged();
+		break;
 	case OBS_FRONTEND_EVENT_EXIT:
 		if (dock)
 			dock->shutdown();

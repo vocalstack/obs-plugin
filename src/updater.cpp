@@ -5,6 +5,7 @@
 #include <obs-module.h>
 #include <plugin-support.h>
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
@@ -281,4 +282,61 @@ void Updater::finishOnExit()
 						"'/c','\"%1\"'")
 					 .arg(QDir::toNativeSeparators(script))});
 #endif
+}
+
+// What starts OBS again: the .app on macOS (LaunchServices starts it as
+// Finder would), the program itself on Linux. Empty where a restart is not
+// offered.
+static QStringList restart_command()
+{
+#if defined(__APPLE__)
+	// …/OBS.app/Contents/MacOS/OBS
+	QDir dir(QFileInfo(QCoreApplication::applicationFilePath()).absolutePath());
+	if (dir.dirName() != "MacOS" || !dir.cdUp() || dir.dirName() != "Contents" || !dir.cdUp() ||
+	    !dir.dirName().endsWith(".app") || !QFile::exists("/usr/bin/open"))
+		return {};
+	QStringList cmd{"/usr/bin/open", dir.absolutePath()};
+	const QStringList args = QCoreApplication::arguments().mid(1);
+	if (!args.isEmpty())
+		cmd << "--args" << args;
+	return cmd;
+#elif defined(_WIN32)
+	return {};
+#else
+	if (QFile::exists("/.flatpak-info") || qEnvironmentVariableIsSet("SNAP") ||
+	    qEnvironmentVariableIsSet("APPIMAGE"))
+		return {};
+	const QString exe = QCoreApplication::applicationFilePath();
+	if (exe.isEmpty() || !QFileInfo(exe).isExecutable())
+		return {};
+	return QStringList{exe} + QCoreApplication::arguments().mid(1);
+#endif
+}
+
+bool Updater::canRestart()
+{
+	return !restart_command().isEmpty() && QFile::exists("/bin/sh");
+}
+
+// $1: this process, $2: how many seconds to wait for it to end, the rest:
+// the command. OBS allows one instance, so the new one starts only once
+// this one is gone; when it never ends, nothing is started.
+static const char *RESTART_SCRIPT = "pid=$1; left=$2; shift 2; "
+				    "while kill -0 \"$pid\" 2>/dev/null; do "
+				    "[ \"$left\" -gt 0 ] || exit 1; left=$((left - 1)); sleep 1; "
+				    "done; "
+				    "exec \"$@\"";
+static const int RESTART_WAIT_S = 60;
+
+bool Updater::restartAfterExit()
+{
+	const QStringList cmd = restart_command();
+	if (cmd.isEmpty())
+		return false;
+	QStringList args{"-c", RESTART_SCRIPT, "sh", QString::number(QCoreApplication::applicationPid()),
+			 QString::number(RESTART_WAIT_S)};
+	args << cmd;
+	const bool ok = QProcess::startDetached("/bin/sh", args);
+	obs_log(ok ? LOG_INFO : LOG_WARNING, "restart: %s", ok ? "OBS starts again once it has quit" : "could not start the helper");
+	return ok;
 }

@@ -19,8 +19,10 @@ class ConnectLogin : public QObject {
 public:
 	explicit ConnectLogin(Api *api, QObject *parent = nullptr);
 
-	// Opens the browser; finished() follows, once.
-	void start();
+	// Opens the browser; finished() follows, once. `workspaceId`: the
+	// workspace the plugin works in now, which the consent screen offers
+	// first; empty on a first sign-in.
+	void start(const QString &workspaceId = QString());
 	void cancel();
 
 signals:
