@@ -26,7 +26,7 @@ Read more about the [VocalStack live transcription plugin for OBS Studio](https:
   marked old; one a major behind no longer starts.
 - **Captions** over the preview name the speaker once more than one has been heard, follow corrections
   made in the dashboard, and fall back to the spoken language when VocalStack refuses a translation (a
-  recording has at most ten languages).
+  transcription has at most ten languages).
 
 ## Download
 

@@ -55,7 +55,7 @@ void ConnectLogin::start(const QString &workspaceId)
 	q.addQueryItem("state", state);
 	q.addQueryItem("code_challenge", s256(verifier));
 	q.addQueryItem("code_challenge_method", "S256");
-	// Record: the plugin starts and stops recordings. Account reach: it
+	// Record: the plugin starts and stops transcriptions. Account reach: it
 	// picks from the account's existing broadcasts.
 	q.addQueryItem("scope", "read write recordings:publish");
 	q.addQueryItem("reach", "account");

@@ -1808,7 +1808,7 @@ void Dock::loadScripts()
 		scripts.clear();
 		for (const QJsonValue v : doc.object().value("scripts").toArray()) {
 			const QJsonObject o = v.toObject();
-			if (o.value("locked").toBool() || o.value("recordingId").isString() || o.value("wordCount").toInt() <= 0)
+			if (o.value("locked").toBool() || o.value("startedTranscriptionId").isString() || o.value("wordCount").toInt() <= 0)
 				continue;
 			scripts.append(o);
 		}

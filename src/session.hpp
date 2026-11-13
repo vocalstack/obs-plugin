@@ -14,11 +14,11 @@
 
 class Api;
 
-// One VocalStack session: the stream to VocalStack, the recording on the
-// plugin's live transcription, the transcription's event feed and the
-// caption feed. Start runs: stream key (made once, kept) → output →
-// the plan's limits → transcription (made once, its settings written each
-// time) → broadcast attached → recording started → events and captions
+// One VocalStack session: the stream to VocalStack, the plugin's live
+// transcription, its event feed and the caption feed. Start runs: stream
+// key (made once, kept) → output → the plan's limits → transcription (a
+// new one once the last was stopped, its settings written each time) →
+// broadcast attached → transcription started → events and captions
 // subscribed. Stop runs it back.
 class Session : public QObject {
 	Q_OBJECT
@@ -37,11 +37,11 @@ public:
 	// The broadcast script the next Start follows (an id from
 	// GET /v1/broadcasts/{id}/scripts); empty: none. Used once.
 	void setScript(const QString &id) { scriptId = id; }
-	// The script the live recording follows, if any.
+	// The script the live transcription follows, if any.
 	QString followingScript() const { return followedScript; }
 	// The caption language changed while live: follow it without a restart.
 	void setCaptionLanguage(const QString &lang);
-	// Ask VocalStack the plan's longest live recording (kept in the
+	// Ask VocalStack the plan's longest live transcription (kept in the
 	// settings); on sign-in, and before each Start.
 	void refreshLimits(std::function<void()> then = {});
 
@@ -60,7 +60,7 @@ signals:
 	// The running transcript, for the transcript panel: a line added or
 	// rewritten (`id` "r:<seq>" for a row, "s:<id>" for a sentence that
 	// takes its rows' place; `start` in media seconds, -1 to keep its
-	// place), lines taken back, and a new recording starting afresh.
+	// place), lines taken back, and a new transcription starting afresh.
 	void transcriptLine(const QString &id, double start, int speaker, const QString &text);
 	void transcriptRemoved(const QStringList &ids);
 	void transcriptCleared();
@@ -68,7 +68,7 @@ signals:
 	// has been heard; empty otherwise.
 	void speakerLabels(const QHash<int, QString> &labels);
 	// VocalStack refused the caption language (its limit of languages a
-	// recording, say): captions went back to the spoken language.
+	// transcription, say): captions went back to the spoken language.
 	void captionLanguageRefused(const QString &message);
 	// The spoken language was changed in VocalStack's dashboard while
 	// recording; the settings follow it.
@@ -91,7 +91,8 @@ private:
 	void applyTranscriptionSettings(Next next);
 	bool dropLimit(const QJsonDocument &doc);
 	void attachBroadcast(Next next);
-	void startRecording(bool takeover);
+	void startTranscription(bool takeover);
+	static bool startable(const QString &state);
 	QJsonObject recordingSettings() const;
 	void subscribe();
 	void openEvents();
@@ -109,13 +110,16 @@ private:
 	Api *api;
 	Settings *settings;
 	VocalStackOutput output;
-	// The caption feed (the recording's subscribe socket) and the
-	// transcription's event feed (where the stream's audio stands,
-	// recordings starting and ending).
+	// The caption feed (the transcription's subscribe socket) and its
+	// event feed (where the stream's audio stands, the transcription
+	// starting and ending).
 	WebSocket feed, events;
 	QTimer ingestPoll, captionClear, resubscribe, reopenEvents, broadcastPoll;
 	State st = State::Idle;
-	QString recordingId;
+	// The transcription running now, empty while none is.
+	QString liveId;
+	// A new transcription was made this Start, the old one stopped.
+	bool remade = false;
 	QString scriptId, followedScript;
 	bool scriptRefused = false;
 	qint64 lastSeq = -1;
@@ -125,7 +129,7 @@ private:
 	// The rows the caption on screen was made from, and who spoke them.
 	QList<qint64> shownSeqs;
 	int shownSpeaker = -1;
-	// The recording sends sentences (sentences.enabled): the caption is
+	// The transcription sends sentences (sentences.enabled): the caption is
 	// made from them only, not also from the rows they are made of.
 	bool sentences = false;
 	// Each speaker's display number and name (transcript.speakerNumbers).
@@ -140,7 +144,7 @@ private:
 	// The wait before a feed is opened again; it doubles while the feed
 	// keeps closing.
 	int resubscribeMs, reopenEventsMs;
-	// A resume is on its way for a recording VocalStack paused.
+	// A resume is on its way for a transcription VocalStack paused.
 	bool resuming = false;
 	QString languageNote, feedNote;
 	// The feed note is an error (VocalStack stopped), not a warning.

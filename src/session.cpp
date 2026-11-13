@@ -19,7 +19,7 @@ static const int RESUBSCRIBE_MS = 3000;
 static const int RESUBSCRIBE_MAX_MS = 60000;
 static const int CLOSE_RESTART = 1012;
 // The server refused what the socket asked (a caption language past the
-// recording's limit of languages).
+// transcription's limit of languages).
 static const int CLOSE_POLICY = 1008;
 
 Session::Session(Api *api_, Settings *settings_, QObject *parent)
@@ -34,7 +34,7 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 			refreshLimits([this]() {
 				ensureTranscription([this]() {
 					applyTranscriptionSettings(
-						[this]() { attachBroadcast([this]() { startRecording(false); }); });
+						[this]() { attachBroadcast([this]() { startTranscription(false); }); });
 				});
 			});
 	});
@@ -67,7 +67,7 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 			return;
 		}
 		if (code == CLOSE_POLICY && !settings->captionLanguage.isEmpty()) {
-			// The caption language was refused (the recording has all the
+			// The caption language was refused (the transcription has all the
 			// languages it may): captions as spoken instead, at once.
 			settings->captionLanguage.clear();
 			settings->save();
@@ -131,6 +131,7 @@ void Session::start()
 	if (st != State::Idle)
 		return;
 	setState(State::Starting);
+	remade = false;
 	setNotes(QString(), QString());
 	emit status(tr("Connecting…"), Session::Level::Warn);
 	ensureStreamKey([this]() {
@@ -176,7 +177,7 @@ void Session::ensureStreamKey(Next next)
 	});
 }
 
-// The plan's longest live recording: a recording ends there, so the
+// The plan's longest live transcription: it ends there, so the
 // transcription asks for all of it (VocalStack's own default is 2 hours).
 void Session::refreshLimits(std::function<void()> then)
 {
@@ -202,13 +203,18 @@ void Session::ensureTranscription(Next next)
 		return;
 	}
 	// Still there? It may have been deleted in the dashboard, or
-	// disabled by VocalStack: a new one then.
+	// disabled by VocalStack: a new one then. A transcription runs once:
+	// one already stopped is kept as it is, and this Start makes a new one.
 	api->get("/v1/transcriptions/" + settings->transcriptionId,
 		 [this, next](int status, const QJsonDocument &doc, const QString &error) {
 			 if (st != State::Starting)
 				 return;
 			 const bool blocked = status == 403 && Api::errorDetails(doc).value("blocked").toBool();
-			 if (status == 404 || blocked) {
+			 if (error.isEmpty() && !startable(doc.object().value("state").toString())) {
+				 settings->transcriptionId.clear();
+				 settings->attachedBroadcastId.clear();
+				 createTranscription(next);
+			 } else if (status == 404 || blocked) {
 				 if (blocked)
 					 obs_log(LOG_WARNING, "VocalStack disabled transcription %s: %s",
 						 settings->transcriptionId.toUtf8().constData(),
@@ -222,6 +228,13 @@ void Session::ensureTranscription(Next next)
 				 next();
 			 }
 		 });
+}
+
+// Not stopped yet: started here (idle), or still running from before
+// (pending, live, paused), which this Start takes over.
+bool Session::startable(const QString &state)
+{
+	return state.isEmpty() || state == "idle" || state == "pending" || state == "live" || state == "paused";
 }
 
 // "OBS on Alexs-MacBook-Pro": the computer's name, without macOS's .local.
@@ -240,7 +253,7 @@ QJsonObject Session::recordingSettings() const
 		{"spokenLanguage", settings->spokenLanguage.isEmpty() ? QJsonValue() : QJsonValue(settings->spokenLanguage)},
 		{"speakerLabels", settings->speakerLabels.isEmpty() ? "auto" : settings->speakerLabels},
 		{"latencyMode", settings->latencyMode.isEmpty() ? "auto" : settings->latencyMode},
-		// The language model's title and summary of each recording: on,
+		// The language model's title and summary of the transcription: on,
 		// as the dashboard has it (VocalStack's own default is off).
 		{"summary", true},
 		{"title", true},
@@ -250,7 +263,7 @@ QJsonObject Session::recordingSettings() const
 	return s;
 }
 
-// VocalStack would not take the recording length asked for (the plan's
+// VocalStack would not take the transcription length asked for (the plan's
 // limit it gave before has changed): once more without it. True when so.
 bool Session::dropLimit(const QJsonDocument &doc)
 {
@@ -288,7 +301,7 @@ void Session::createTranscription(Next next)
 	});
 }
 
-// The dock's name, lock and recording settings, written to the
+// The dock's name, lock and transcription settings, written to the
 // transcription each Start: what it was made with may have changed since.
 void Session::applyTranscriptionSettings(Next next)
 {
@@ -349,17 +362,17 @@ void Session::attachBroadcast(Next next)
 	api->del(base + had, [attach](int, const QJsonDocument &, const QString &) { attach(); });
 }
 
-// Why a recording could not start, for the dock: the plan's credit or
+// Why a transcription could not start, for the dock: the plan's credit or
 // caps link to the app's billing page.
 static QString start_error(const QString &appBase, const QString &code, const QString &message)
 {
 	if (code == "insufficient_credit" || code == "usage_cap_reached" || code == "quota_exceeded")
 		return QStringLiteral("%1 <a href=\"%2/billing\">%3</a>")
 			.arg(message.toHtmlEscaped(), appBase, QObject::tr("Open billing"));
-	return QObject::tr("Could not start recording: %1").arg(message);
+	return QObject::tr("Could not start transcribing: %1").arg(message);
 }
 
-void Session::startRecording(bool takeover)
+void Session::startTranscription(bool takeover)
 {
 	QJsonObject body;
 	if (takeover)
@@ -369,9 +382,9 @@ void Session::startRecording(bool takeover)
 	if (!script.isEmpty())
 		body.insert("scriptId", script);
 	// A start sent again after a timeout is answered as the first was,
-	// not recorded twice.
+	// not started twice.
 	const QString key = QUuid::createUuid().toString(QUuid::WithoutBraces);
-	api->post("/v1/transcriptions/" + settings->transcriptionId + "/recordings", body, key,
+	api->post("/v1/transcriptions/" + settings->transcriptionId + "/start", body, key,
 		  [this, takeover, script](int code, const QJsonDocument &doc, const QString &error) {
 			  if (st != State::Starting)
 				  return;
@@ -381,20 +394,34 @@ void Session::startRecording(bool takeover)
 					  error.toUtf8().constData());
 				  scriptId.clear();
 				  scriptRefused = true;
-				  startRecording(takeover);
+				  startTranscription(takeover);
 				  return;
 			  }
 			  if (code == 409 && !takeover && Api::errorCode(doc) == "conflict") {
 				  // Another device holds this transcription: OBS takes it.
-				  startRecording(true);
+				  startTranscription(true);
+				  return;
+			  }
+			  if (code == 409 && !remade && Api::errorCode(doc) == "invalid_state") {
+				  // Stopped since it was looked at (in the dashboard): it
+				  // runs only once, so a new one.
+				  remade = true;
+				  settings->transcriptionId.clear();
+				  settings->attachedBroadcastId.clear();
+				  settings->save();
+				  ensureTranscription([this, takeover]() {
+					  applyTranscriptionSettings(
+						  [this, takeover]() { attachBroadcast([this, takeover]() { startTranscription(takeover); }); });
+				  });
 				  return;
 			  }
 			  if (!error.isEmpty()) {
 				  failStart(start_error(api->appBase(), Api::errorCode(doc), error));
 				  return;
 			  }
-			  recordingId = doc.object().value("recording").toObject().value("id").toString();
-			  followedScript = doc.object().value("recording").toObject().value("scriptId").toString();
+			  const QJsonObject t = doc.object().value("transcription").toObject();
+			  liveId = t.value("id").toString(settings->transcriptionId);
+			  followedScript = t.value("scriptId").toString();
 			  scriptId.clear();
 			  lastSeq = -1;
 			  readyCursor = -1;
@@ -408,7 +435,7 @@ void Session::startRecording(bool takeover)
 			  resubscribeMs = reopenEventsMs = RESUBSCRIBE_MS;
 			  setState(State::Live);
 			  if (scriptRefused)
-				  emit status(tr("Transcribing without the script: it was recorded or deleted."),
+				  emit status(tr("Transcribing without the script: it was already used or deleted."),
 					      Session::Level::Warn);
 			  else
 				  emit status(tr("Transcribing"), Session::Level::Ok);
@@ -448,7 +475,7 @@ void Session::end(const QString &error)
 	emit listeners(-1);
 
 	auto done = [this, error]() {
-		recordingId.clear();
+		liveId.clear();
 		followedScript.clear();
 		setState(State::Idle);
 		if (error.isEmpty())
@@ -456,12 +483,12 @@ void Session::end(const QString &error)
 		else
 			emit status(error, Session::Level::Error);
 	};
-	if (!wasLive || recordingId.isEmpty()) {
+	if (!wasLive || liveId.isEmpty()) {
 		done();
 		return;
 	}
-	// A live recording is paused before it can be stopped.
-	const QString base = "/v1/recordings/" + recordingId;
+	// A live transcription is paused before it can be stopped.
+	const QString base = "/v1/transcriptions/" + liveId;
 	api->post(base + "/pause", {}, [this, base, done](int, const QJsonDocument &, const QString &) {
 		api->post(base + "/stop", {}, [this, done](int, const QJsonDocument &, const QString &stopError) {
 			done();
@@ -473,9 +500,9 @@ void Session::end(const QString &error)
 
 void Session::subscribe()
 {
-	if (recordingId.isEmpty())
+	if (liveId.isEmpty())
 		return;
-	QUrl url(api->apiBase() + "/v1/recordings/" + recordingId + "/subscribe");
+	QUrl url(api->apiBase() + "/v1/transcriptions/" + liveId + "/subscribe");
 	url.setScheme(url.scheme() == "http" ? "ws" : "wss");
 	if (!settings->captionLanguage.isEmpty()) {
 		QUrlQuery q;
@@ -488,7 +515,7 @@ void Session::subscribe()
 }
 
 // The transcription's event feed: where the stream's audio stands
-// (stream.ingest), the recording ending (recording.ended).
+// (stream.ingest), the transcription ending (transcription.ended).
 void Session::openEvents()
 {
 	if (settings->transcriptionId.isEmpty())
@@ -557,8 +584,8 @@ void Session::onFrame(const QString &text)
 		readyCursor = f.value("lastSeq").toInteger(-1);
 		const QString s = f.value("state").toString();
 		if (st == State::Live && (s == "ended" || s == "finalized")) {
-			recordingId.clear();
-			end(tr("VocalStack ended the recording"));
+			liveId.clear();
+			end(tr("VocalStack ended the transcription"));
 		}
 	} else if (type == "transcript.committed") {
 		const QJsonObject seg = f.value("segment").toObject();
@@ -685,7 +712,7 @@ void Session::onFrame(const QString &text)
 				 message.isEmpty() ? tr("VocalStack stopped transcribing (%1)").arg(code) : message);
 		}
 	} else if (type == "recording.settings") {
-		// Changed in the dashboard while recording: the dock follows.
+		// Changed in the dashboard while live: the dock follows.
 		const QJsonObject s = f.value("settings").toObject();
 		if (s.contains("spokenLanguage")) {
 			const QString l = s.value("spokenLanguage").toString();
@@ -698,7 +725,7 @@ void Session::onFrame(const QString &text)
 	} else if (type == "recording.expiring") {
 		const int minutes = qMax(1, int(f.value("endsInS").toDouble() / 60));
 		feedError = false;
-		setNotes(languageNote, tr("VocalStack ends this recording in %n minute(s): the plan's longest recording. "
+		setNotes(languageNote, tr("VocalStack ends this transcription in %n minute(s): the plan's longest live transcription. "
 					  "Stop and start again for a new one.",
 					  nullptr, minutes));
 	} else if (type == "recording.silence") {
@@ -710,11 +737,11 @@ void Session::onFrame(const QString &text)
 			return;
 		if (s == "ended" || s == "finalized") {
 			// Nothing more is transcribed: stop streaming to VocalStack
-			// too. The recording is over, so it is not paused and stopped.
+			// too. The transcription is over, so it is not paused and stopped.
 			const QString reason = f.value("reason").toString();
-			obs_log(LOG_WARNING, "VocalStack ended the recording (%s)", reason.toUtf8().constData());
-			recordingId.clear();
-			end(tr("VocalStack ended the recording"));
+			obs_log(LOG_WARNING, "VocalStack ended the transcription (%s)", reason.toUtf8().constData());
+			liveId.clear();
+			end(tr("VocalStack ended the transcription"));
 		} else if (s == "paused") {
 			// Paused by VocalStack (silence) or in the dashboard, while OBS
 			// still streams: left paused it would end, so it goes on.
@@ -728,11 +755,11 @@ void Session::onFrame(const QString &text)
 
 void Session::resume()
 {
-	if (resuming || recordingId.isEmpty())
+	if (resuming || liveId.isEmpty())
 		return;
 	resuming = true;
 	emit status(tr("Paused by VocalStack · resuming…"), Session::Level::Warn);
-	api->post("/v1/recordings/" + recordingId + "/resume", {},
+	api->post("/v1/transcriptions/" + liveId + "/resume", {},
 		  [this](int, const QJsonDocument &, const QString &error) {
 			  if (st != State::Live)
 				  return;
@@ -751,13 +778,13 @@ void Session::onEvent(const QString &text)
 	if (st != State::Live)
 		return;
 	if (type == "stream.ingest") {
-		if (f.value("recordingId").toString() == recordingId)
+		if (f.value("transcriptionId").toString() == liveId)
 			onIngest(f);
-	} else if (type == "recording.ended") {
-		if (f.value("recordingId").toString() == recordingId) {
-			obs_log(LOG_WARNING, "VocalStack ended the recording");
-			recordingId.clear();
-			end(tr("VocalStack ended the recording"));
+	} else if (type == "transcription.ended") {
+		if (f.value("transcriptionId").toString() == liveId) {
+			obs_log(LOG_WARNING, "VocalStack ended the transcription");
+			liveId.clear();
+			end(tr("VocalStack ended the transcription"));
 		}
 	}
 }
