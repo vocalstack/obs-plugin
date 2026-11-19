@@ -73,7 +73,7 @@ jobs:
 
   macos-build:
     name: Build for macOS 🍏
-    runs-on: blacksmith-6vcpu-macos-15
+    runs-on: macos-15
     # A cap, so a hung build cannot run up the bill (macOS bills 10x Linux);
     # Apple's notary service can take a while.
     timeout-minutes: 60
