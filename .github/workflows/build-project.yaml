@@ -8,7 +8,7 @@ on:
 jobs:
   check-event:
     name: Check GitHub Event Data 🔎
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     defaults:
       run:
@@ -73,7 +73,7 @@ jobs:
 
   macos-build:
     name: Build for macOS 🍏
-    runs-on: macos-15
+    runs-on: blacksmith-6vcpu-macos-15
     # A cap, so a hung build cannot run up the bill (macOS bills 10x Linux);
     # Apple's notary service can take a while.
     timeout-minutes: 60
@@ -232,7 +232,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     needs: check-event
     defaults:
