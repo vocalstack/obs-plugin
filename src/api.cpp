@@ -5,11 +5,13 @@
 
 #include "net.hpp"
 
+#include <QJsonArray>
 #include <QPointer>
 #include <QTimer>
 #include <QUrl>
 
 #include <cstdio>
+#include <memory>
 
 // The longest Retry-After waited for before giving the error back.
 static const int RETRY_MAX_S = 15;
@@ -35,6 +37,51 @@ void Api::get(const QString &path, Done done)
 	send(std::move(r), std::move(done));
 }
 
+// At most this many pages: a cursor that never ends is not followed forever.
+static const int PAGES_MAX = 50;
+
+struct Api::Pages {
+	QString path, field;
+	QJsonArray items;
+	int read = 0;
+	Done done;
+};
+
+void Api::getAll(const QString &path, const QString &field, Done done)
+{
+	auto pages = std::make_shared<Pages>();
+	pages->path = path;
+	pages->field = field;
+	pages->done = std::move(done);
+	getPage(pages, QString());
+}
+
+void Api::getPage(std::shared_ptr<Pages> pages, const QString &cursor)
+{
+	QString url = pages->path;
+	if (!cursor.isEmpty())
+		url += (url.contains('?') ? "&cursor=" : "?cursor=") +
+		       QString::fromLatin1(QUrl::toPercentEncoding(cursor));
+	get(url, [this, pages](int status, const QJsonDocument &doc, const QString &error) {
+		if (!error.isEmpty()) {
+			pages->done(status, doc, error);
+			return;
+		}
+		const QJsonObject o = doc.object();
+		for (const QJsonValue v : o.value(pages->field).toArray())
+			pages->items.append(v);
+		const QString next = o.value("nextCursor").toString();
+		if (!next.isEmpty() && ++pages->read < PAGES_MAX) {
+			getPage(pages, next);
+			return;
+		}
+		QJsonObject all = o;
+		all.insert(pages->field, pages->items);
+		all.remove("nextCursor");
+		pages->done(status, QJsonDocument(all), QString());
+	});
+}
+
 void Api::post(const QString &path, const QJsonObject &body, Done done)
 {
 	post(path, body, QString(), std::move(done));
@@ -50,6 +97,34 @@ void Api::post(const QString &path, const QJsonObject &body, const QString &idem
 	r.contentType = "application/json";
 	r.idempotencyKey = idempotencyKey.toUtf8();
 	send(std::move(r), std::move(done));
+}
+
+void Api::postWaiting(const QString &path, const QJsonObject &body, int timeoutMs, Done done)
+{
+	Request r;
+	r.method = "POST";
+	r.url = api + path;
+	r.body = QJsonDocument(body).toJson(QJsonDocument::Compact);
+	r.hasBody = true;
+	r.contentType = "application/json";
+	r.timeoutMs = timeoutMs;
+	send(std::move(r), std::move(done));
+}
+
+void Api::revoke(const QString &key, Done done)
+{
+	if (key.isEmpty()) {
+		if (done)
+			done(0, {}, QString());
+		return;
+	}
+	Request r;
+	r.method = "POST";
+	r.url = api + "/v1/connect/revoke";
+	r.hasBody = true;
+	r.quiet = true;
+	r.keyOverride = key;
+	send(std::move(r), done ? std::move(done) : [](int, const QJsonDocument &, const QString &) {});
 }
 
 void Api::postQuiet(const QString &path, const QJsonObject &body, Done done)
@@ -267,15 +342,16 @@ void Api::send(Request req, Done done)
 	struct curl_slist *list = curl_slist_append(nullptr, "Accept: application/json");
 	if (!req.contentType.isEmpty())
 		list = curl_slist_append(list, ("Content-Type: " + req.contentType).constData());
-	if (req.withKey && !apiKey.isEmpty())
-		list = curl_slist_append(list, ("Authorization: Bearer " + apiKey.toUtf8()).constData());
+	const QString bearer = req.keyOverride.isEmpty() ? apiKey : req.keyOverride;
+	if (req.withKey && !bearer.isEmpty())
+		list = curl_slist_append(list, ("Authorization: Bearer " + bearer.toUtf8()).constData());
 	if (!req.idempotencyKey.isEmpty())
 		list = curl_slist_append(list, ("Idempotency-Key: " + req.idempotencyKey).constData());
 
 	curl_easy_setopt(easy, CURLOPT_URL, req.url.toUtf8().constData());
 	curl_easy_setopt(easy, CURLOPT_HTTPHEADER, list);
 	curl_easy_setopt(easy, CURLOPT_USERAGENT, (QByteArray("vocalstack-obs/") + PLUGIN_VERSION).constData());
-	curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, 20000L);
+	curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, req.timeoutMs);
 	curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, collect);
 	curl_easy_setopt(easy, CURLOPT_WRITEDATA, received);

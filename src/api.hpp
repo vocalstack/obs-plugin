@@ -6,6 +6,7 @@
 #include <QUrlQuery>
 
 #include <functional>
+#include <memory>
 
 // VocalStack's public API (/v1), authenticated with an API key. Every call
 // answers on the Qt main thread.
@@ -28,11 +29,20 @@ public:
 	QString key() const { return apiKey; }
 
 	void get(const QString &path, Done done);
+	// A list read to its end: the pages `nextCursor` names are read too
+	// and their `field` arrays joined, answered as one { field: [...] }.
+	void getAll(const QString &path, const QString &field, Done done);
 	void post(const QString &path, const QJsonObject &body, Done done);
 	// A post that is safe to send again (a timeout, a 503): the API
 	// answers a repeat with the same `idempotencyKey` and body as it did
 	// the first, instead of acting twice.
 	void post(const QString &path, const QJsonObject &body, const QString &idempotencyKey, Done done);
+	// A post the API may take long to answer (a live transcription's
+	// stop waits up to about 20 s for its capture to end).
+	void postWaiting(const QString &path, const QJsonObject &body, int timeoutMs, Done done);
+	// POST /v1/connect/revoke with `key` (not the one in use): the key
+	// signs itself out. Never signs the person out; `done` may be empty.
+	void revoke(const QString &key, Done done);
 	// A post whose refusal never signs the person out (background pings).
 	void postQuiet(const QString &path, const QJsonObject &body, Done done);
 	void patch(const QString &path, const QJsonObject &body, Done done);
@@ -73,12 +83,18 @@ private:
 		bool hasBody = false;
 		QByteArray contentType, idempotencyKey;
 		bool withKey = true, quiet = false;
+		// Sent instead of the key in use (a key being revoked).
+		QString keyOverride;
+		long timeoutMs = 20000;
 		// Sent again once after a 429 or 503 that says when (Retry-After):
 		// reads, and posts that carry an idempotency key.
 		bool retried = false;
 	};
 
 	void send(Request req, Done done);
+
+	struct Pages;
+	void getPage(std::shared_ptr<Pages> pages, const QString &cursor);
 
 	QString api, app, apiKey;
 };

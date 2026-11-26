@@ -13,6 +13,7 @@ VocalStackOutput::~VocalStackOutput()
 		signal_handler_disconnect(sh, "start", onStart, this);
 		signal_handler_disconnect(sh, "stop", onStop, this);
 		signal_handler_disconnect(sh, "reconnect", onReconnect, this);
+		signal_handler_disconnect(sh, "reconnect_success", onReconnected, this);
 		obs_output_force_stop(output);
 	}
 }
@@ -85,11 +86,15 @@ bool VocalStackOutput::start(const QString &serverUrl, const QString &streamKey,
 		signal_handler_connect(sh, "start", onStart, this);
 		signal_handler_connect(sh, "stop", onStop, this);
 		signal_handler_connect(sh, "reconnect", onReconnect, this);
+		signal_handler_connect(sh, "reconnect_success", onReconnected, this);
 	}
 	obs_output_set_service(output, service);
 	obs_output_set_video_encoder(output, videoEncoder);
 	obs_output_set_audio_encoder(output, audioEncoder, 0);
-	obs_output_set_reconnect_settings(output, 20, 3);
+	// A few quick tries of OBS's own (2, 3, 4.5 s: it waits 1.5 times
+	// longer each time, up to 15 minutes); then the session starts the
+	// output again every few seconds for as long as VocalStack waits.
+	obs_output_set_reconnect_settings(output, 3, 2);
 
 	if (!obs_output_start(output)) {
 		const char *err = obs_output_get_last_error(output);
@@ -119,12 +124,19 @@ void VocalStackOutput::onReconnect(void *data, calldata_t *)
 	QMetaObject::invokeMethod(self, [self]() { emit self->reconnecting(); }, Qt::QueuedConnection);
 }
 
+void VocalStackOutput::onReconnected(void *data, calldata_t *)
+{
+	auto *self = static_cast<VocalStackOutput *>(data);
+	QMetaObject::invokeMethod(self, [self]() { emit self->reconnected(); }, Qt::QueuedConnection);
+}
+
 void VocalStackOutput::onStop(void *data, calldata_t *cd)
 {
 	auto *self = static_cast<VocalStackOutput *>(data);
 	const long long code = calldata_int(cd, "code");
 	QString error;
 	const bool keyRefused = code == OBS_OUTPUT_BAD_PATH || code == OBS_OUTPUT_INVALID_STREAM;
+	const bool lost = code == OBS_OUTPUT_CONNECT_FAILED || code == OBS_OUTPUT_DISCONNECTED;
 	if (code != OBS_OUTPUT_SUCCESS) {
 		const char *last = obs_output_get_last_error(self->output);
 		switch (code) {
@@ -133,15 +145,28 @@ void VocalStackOutput::onStop(void *data, calldata_t *cd)
 			error = QObject::tr("VocalStack refused the stream key");
 			break;
 		case OBS_OUTPUT_CONNECT_FAILED:
-			error = QObject::tr("Could not connect to VocalStack");
+			error = QObject::tr("OBS could not reach VocalStack. Check this computer's internet "
+					    "connection, then press Start again.");
 			break;
 		case OBS_OUTPUT_DISCONNECTED:
-			error = QObject::tr("The connection to VocalStack was lost");
+			error = QObject::tr("Lost the connection to VocalStack. Check this computer's internet "
+					    "connection, then press Start again.");
+			break;
+		case OBS_OUTPUT_ENCODE_ERROR:
+			error = QObject::tr("OBS's encoder stopped, so nothing reached VocalStack. Press Start again; "
+					    "if it happens again, lower OBS's load (fewer sources, or a lower output "
+					    "size).");
 			break;
 		default:
-			error = last && *last ? QString::fromUtf8(last) : QObject::tr("The stream to VocalStack stopped");
+			error = last && *last
+					? QObject::tr("OBS stopped sending to VocalStack: %1").arg(QString::fromUtf8(last))
+					: QObject::tr("OBS stopped sending to VocalStack. Press Start again.");
 		}
 	}
-	QMetaObject::invokeMethod(self, [self, error, keyRefused]() { emit self->stopped(error, keyRefused); },
-				  Qt::QueuedConnection);
+	if (code != OBS_OUTPUT_SUCCESS)
+		obs_log(LOG_WARNING, "the VocalStack output stopped (code %lld): %s", code,
+			error.toUtf8().constData());
+	QMetaObject::invokeMethod(
+		self, [self, error, keyRefused, lost]() { emit self->stopped(error, keyRefused, lost); },
+		Qt::QueuedConnection);
 }

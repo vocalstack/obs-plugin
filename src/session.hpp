@@ -92,6 +92,8 @@ private:
 	bool dropLimit(const QJsonDocument &doc);
 	void attachBroadcast(Next next);
 	void startTranscription(bool takeover);
+	void readTranscription();
+	void accessRevoked();
 	static bool startable(const QString &state);
 	QJsonObject recordingSettings() const;
 	void subscribe();
@@ -115,6 +117,13 @@ private:
 	// starting and ending).
 	WebSocket feed, events;
 	QTimer ingestPoll, captionClear, resubscribe, reopenEvents, broadcastPoll;
+	// The stream to VocalStack started again after the network dropped it.
+	QTimer outputRetry;
+	// When the network dropped the stream (ms since the epoch), 0 while
+	// it flows.
+	qint64 lostSince = 0;
+	void streamLost(const QString &error);
+	void streamBack();
 	State st = State::Idle;
 	// The transcription running now, empty while none is.
 	QString liveId;
@@ -149,4 +158,8 @@ private:
 	QString languageNote, feedNote;
 	// The feed note is an error (VocalStack stopped), not a warning.
 	bool feedError = false;
+	// The event feed closed since it last opened.
+	bool eventsReopened = false;
+	// A 4003 close was looked into for this transcription.
+	bool revokedChecked = false;
 };

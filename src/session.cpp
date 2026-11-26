@@ -4,6 +4,7 @@
 
 #include <plugin-support.h>
 
+#include <QDateTime>
 #include <QHostInfo>
 #include <QJsonArray>
 #include <QUrlQuery>
@@ -21,6 +22,22 @@ static const int CLOSE_RESTART = 1012;
 // The server refused what the socket asked (a caption language past the
 // transcription's limit of languages).
 static const int CLOSE_POLICY = 1008;
+// After the network dropped the stream, it is started again this often,
+// for this long: VocalStack waits about 10 minutes for audio to come back
+// before it ends the transcription.
+static const int OUTPUT_RETRY_MS = 5000;
+static const qint64 OUTPUT_RETRY_FOR_MS = 9 * 60 * 1000;
+static const char *const LOST_TEXT = QT_TRANSLATE_NOOP("Session", "Lost the connection to VocalStack. Check this "
+								   "computer's internet connection; OBS is trying again.");
+// Stop answers once the capture ended, within about 20 s.
+static const int STOP_TIMEOUT_MS = 45000;
+// The key or access the socket was opened with was revoked: not opened
+// again with it (the key is checked; a refused key signs the person out).
+static const int CLOSE_ACCESS = 4003;
+// A socket with no key open too long, or a client that fell behind:
+// opened again at once.
+static const int CLOSE_TOO_LONG = 4002;
+static const int CLOSE_BEHIND = 4004;
 
 Session::Session(Api *api_, Settings *settings_, QObject *parent)
 	: QObject(parent),
@@ -30,6 +47,10 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 	  reopenEventsMs(RESUBSCRIBE_MS)
 {
 	connect(&output, &VocalStackOutput::started, this, [this]() {
+		if (st == State::Live && lostSince) {
+			streamBack();
+			return;
+		}
 		if (st == State::Starting)
 			refreshLimits([this]() {
 				ensureTranscription([this]() {
@@ -38,9 +59,21 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 				});
 			});
 	});
-	connect(&output, &VocalStackOutput::reconnecting, this,
-		[this]() { emit status(tr("Reconnecting…"), Session::Level::Warn); });
-	connect(&output, &VocalStackOutput::stopped, this, [this](const QString &error, bool keyRefused) {
+	connect(&output, &VocalStackOutput::reconnecting, this, [this]() {
+		if (!lostSince)
+			lostSince = QDateTime::currentMSecsSinceEpoch();
+		emit status(tr(LOST_TEXT), Session::Level::Warn);
+	});
+	connect(&output, &VocalStackOutput::reconnected, this, &Session::streamBack);
+	outputRetry.setSingleShot(true);
+	connect(&outputRetry, &QTimer::timeout, this, [this]() {
+		if (st != State::Live || output.active())
+			return;
+		obs_log(LOG_INFO, "starting the stream to VocalStack again");
+		if (!output.start(settings->serverUrl, settings->streamKey, settings->sendVideo))
+			streamLost(QString()); // OBS would not even start it: try again shortly
+	});
+	connect(&output, &VocalStackOutput::stopped, this, [this](const QString &error, bool keyRefused, bool lost) {
 		if (keyRefused) {
 			// Removed in the dashboard, or its connection revoked: the
 			// next Start makes a new one.
@@ -50,6 +83,10 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 		}
 		if (error.isEmpty() || st == State::Idle || st == State::Stopping)
 			return;
+		if (st == State::Live && lost) {
+			streamLost(error);
+			return;
+		}
 		if (st == State::Starting)
 			failStart(error);
 		else
@@ -62,7 +99,11 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 		if (st != State::Live || reason.isEmpty())
 			return;
 		obs_log(LOG_WARNING, "caption feed closed (%d): %s", code, reason.toUtf8().constData());
-		if (code == CLOSE_RESTART) {
+		if (code == CLOSE_ACCESS) {
+			accessRevoked();
+			return;
+		}
+		if (code == CLOSE_RESTART || code == CLOSE_BEHIND || code == CLOSE_TOO_LONG) {
 			resubscribe.start(0);
 			return;
 		}
@@ -88,13 +129,23 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 	connect(&events, &WebSocket::opened, this, [this]() {
 		reopenEventsMs = RESUBSCRIBE_MS;
 		ingestPoll.stop(); // the feed says it now
+		// Only transcription.started is sent again on open: an end or a
+		// stream.ingest sent while the feed was closed is read instead.
+		if (eventsReopened)
+			readTranscription();
+		eventsReopened = false;
 	});
 	connect(&events, &WebSocket::closed, this, [this](const QString &reason, int code) {
 		if (st != State::Live || reason.isEmpty())
 			return;
 		obs_log(LOG_WARNING, "event feed closed (%d): %s", code, reason.toUtf8().constData());
 		ingestPoll.start(); // until it is back
-		if (code == CLOSE_RESTART) {
+		if (code == CLOSE_ACCESS) {
+			accessRevoked();
+			return;
+		}
+		eventsReopened = true;
+		if (code == CLOSE_RESTART || code == CLOSE_BEHIND || code == CLOSE_TOO_LONG) {
 			reopenEvents.start(0);
 			return;
 		}
@@ -425,6 +476,7 @@ void Session::startTranscription(bool takeover)
 			  scriptId.clear();
 			  lastSeq = -1;
 			  readyCursor = -1;
+			  eventsReopened = revokedChecked = false;
 			  sentences = false;
 			  resuming = false;
 			  speakers.clear();
@@ -463,6 +515,8 @@ void Session::end(const QString &error)
 		return;
 	const bool wasLive = st == State::Live;
 	setState(State::Stopping);
+	outputRetry.stop();
+	lostSince = 0;
 	ingestPoll.stop();
 	broadcastPoll.stop();
 	resubscribe.stop();
@@ -490,11 +544,15 @@ void Session::end(const QString &error)
 	// A live transcription is paused before it can be stopped.
 	const QString base = "/v1/transcriptions/" + liveId;
 	api->post(base + "/pause", {}, [this, base, done](int, const QJsonDocument &, const QString &) {
-		api->post(base + "/stop", {}, [this, done](int, const QJsonDocument &, const QString &stopError) {
-			done();
-			if (!stopError.isEmpty())
-				emit status(tr("Stopped, but VocalStack said: %1").arg(stopError), Session::Level::Warn);
-		});
+		// Stop waits for the capture to end (up to about 20 s) and answers
+		// the ended transcription; a timeout here would read as a failure.
+		api->postWaiting(base + "/stop", {}, STOP_TIMEOUT_MS,
+				 [this, done](int, const QJsonDocument &, const QString &stopError) {
+					 done();
+					 if (!stopError.isEmpty())
+						 emit status(tr("Stopped, but VocalStack said: %1").arg(stopError),
+							     Session::Level::Warn);
+				 });
 	});
 }
 
@@ -789,20 +847,114 @@ void Session::onEvent(const QString &text)
 	}
 }
 
+// The network dropped the stream under a live session (OBS's own quick
+// retries ran out): it is started again every few seconds while VocalStack
+// still waits for it, then the session ends with `error`.
+void Session::streamLost(const QString &error)
+{
+	const qint64 now = QDateTime::currentMSecsSinceEpoch();
+	if (!lostSince)
+		lostSince = now;
+	if (now - lostSince >= OUTPUT_RETRY_FOR_MS) {
+		obs_log(LOG_WARNING, "the stream to VocalStack did not come back in %lld s",
+			(long long)((now - lostSince) / 1000));
+		end(error.isEmpty() ? tr("OBS could not reach VocalStack. Check this computer's internet connection, "
+					 "then press Start again.")
+				    : error);
+		return;
+	}
+	emit status(tr(LOST_TEXT), Session::Level::Warn);
+	outputRetry.start(OUTPUT_RETRY_MS);
+}
+
+// The stream flows again after a drop.
+void Session::streamBack()
+{
+	if (st != State::Live || !lostSince)
+		return;
+	obs_log(LOG_INFO, "the stream to VocalStack is back after %lld s",
+		(long long)((QDateTime::currentMSecsSinceEpoch() - lostSince) / 1000));
+	lostSince = 0;
+	outputRetry.stop();
+	emit status(tr("Connected again · waiting for VocalStack to hear the stream…"), Session::Level::Warn);
+}
+
+// The live transcription read once, for what the event feed may have
+// missed while it was closed: its end, or where its stream stands.
+void Session::readTranscription()
+{
+	if (liveId.isEmpty())
+		return;
+	const QString id = liveId;
+	api->get("/v1/transcriptions/" + id, [this, id](int, const QJsonDocument &doc, const QString &error) {
+		if (st != State::Live || id != liveId || !error.isEmpty())
+			return;
+		const QJsonObject t = doc.object();
+		const QString state = t.value("state").toString();
+		if (state == "processing" || state == "ended" || state == "finalized") {
+			obs_log(LOG_WARNING, "VocalStack ended the transcription (read after the event feed reopened)");
+			liveId.clear();
+			end(tr("VocalStack ended the transcription"));
+			return;
+		}
+		const QJsonObject ingest = t.value("ingest").toObject();
+		if (!ingest.isEmpty())
+			onIngest(ingest);
+	});
+}
+
+// A socket closed with 4003: the key, or its access to this transcription,
+// was revoked. The key is checked once: refused, it signs the person out
+// (Api::unauthorized); still good, the transcription is out of its reach.
+void Session::accessRevoked()
+{
+	if (revokedChecked)
+		return;
+	revokedChecked = true;
+	resubscribe.stop();
+	reopenEvents.stop();
+	api->get("/v1/me", [this](int status, const QJsonDocument &, const QString &error) {
+		if (st != State::Live || status == 401)
+			return; // signed out meanwhile
+		if (!error.isEmpty() && status == 0) {
+			// No answer: try the feeds again later, as after any close.
+			revokedChecked = false;
+			reopenEvents.start(RESUBSCRIBE_MAX_MS);
+			if (settings->showCaptions)
+				resubscribe.start(RESUBSCRIBE_MAX_MS);
+			return;
+		}
+		feedError = true;
+		setNotes(languageNote, tr("VocalStack no longer lets this sign-in follow the transcription (its access "
+					  "was changed in the dashboard). Captions stopped; stop and start again."));
+	});
+}
+
 // Where VocalStack's pull of the stream stands.
 void Session::onIngest(const QJsonObject &f)
 {
 	const QString state = f.value("state").toString();
 	const QString detected = f.value("detected").toString(), error = f.value("error").toString();
+	// While this computer's connection is down, what OBS says is what
+	// matters: VocalStack's "reconnecting" only repeats it.
+	if (lostSince && (state == "connecting" || state == "reconnecting"))
+		return;
 	if (state == "streaming")
 		emit status(tr("Hearing %1").arg(detected.isEmpty() ? tr("the stream") : detected), Session::Level::Ok);
 	else if (state == "connecting")
 		emit status(error.isEmpty() ? tr("Waiting for audio…") : error, Session::Level::Warn);
 	else if (state == "reconnecting")
-		emit status(error.isEmpty() ? tr("Audio lost · reconnecting…") : tr("Audio lost (%1) · reconnecting…").arg(error),
+		// OBS still thinks it streams, but no audio arrives: a connection
+		// that died without closing, a sleeping computer, a stalled OBS.
+		// VocalStack's own sentence about a "source" means nothing here.
+		emit status(tr("VocalStack hears nothing from OBS. Check this computer's internet connection; "
+			       "VocalStack keeps waiting for about 10 minutes."),
 			    Session::Level::Warn);
-	else if (state == "failed")
-		end(error.isEmpty() ? tr("VocalStack gave up on the stream") : tr("VocalStack gave up on the stream: %1").arg(error));
+	else if (state == "failed") {
+		obs_log(LOG_WARNING, "VocalStack gave up on the stream: %s", error.toUtf8().constData());
+		end(tr("No audio from OBS reached VocalStack for about 10 minutes, so the transcription ended. "
+		       "Check this computer's internet connection, then press Start again."));
+	}
 }
 
 void Session::emitSpeakers()
@@ -846,8 +998,8 @@ void Session::setNotes(const QString &language, const QString &feed)
 // Whether VocalStack hears the stream: the plugin's key's live state.
 void Session::pollIngest()
 {
-	api->get("/v1/rtmp/keys", [this](int, const QJsonDocument &doc, const QString &error) {
-		if (st != State::Live || !error.isEmpty() || events.isOpen())
+	api->getAll("/v1/rtmp/keys", "keys", [this](int, const QJsonDocument &doc, const QString &error) {
+		if (st != State::Live || !error.isEmpty() || events.isOpen() || lostSince)
 			return;
 		for (const QJsonValue v : doc.object().value("keys").toArray()) {
 			const QJsonObject k = v.toObject();

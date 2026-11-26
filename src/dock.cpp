@@ -1592,14 +1592,26 @@ void Dock::workspaceChosen(const QString &key, const QString &account, const Wor
 	workspaceError.clear();
 	// The same workspace picked again: only the key is new.
 	const bool same = workspace.known() && workspace.id == settings.workspace.id;
-	if (!same) {
+	// The old key from Connect signs itself out: VocalStack revokes it on
+	// its own only for the same redirect address, and the plugin's port
+	// changes every sign-in. A pasted key is the person's own, kept.
+	// A stream key works only while the key that made it does, so it is
+	// replaced with the key (the next Start makes one).
+	const QString oldKey = settings.viaConnect && settings.apiKey != key ? settings.apiKey : QString();
+	if (!same || !oldKey.isEmpty()) {
 		// Sent with the old key, which made the stream key.
 		if (!settings.streamKeyId.isEmpty())
 			api->delQuiet("/v1/rtmp/keys/" + settings.streamKeyId,
-				      [](int, const QJsonDocument &, const QString &) {});
+				      [this, oldKey](int, const QJsonDocument &, const QString &) {
+					      api->revoke(oldKey, nullptr);
+				      });
+		else
+			api->revoke(oldKey, nullptr);
 		settings.streamKey.clear();
 		settings.streamKeyId.clear();
 		settings.serverUrl.clear();
+	}
+	if (!same) {
 		settings.transcriptionId.clear();
 		settings.broadcastId.clear();
 		settings.attachedBroadcastId.clear();
@@ -1668,8 +1680,18 @@ void Dock::signOut(const QString &why)
 	workspaceIcon = QImage();
 	workspaceIconWanted.clear();
 	Settings::saveWorkspaceIcon(QByteArray());
-	if (!settings.streamKeyId.isEmpty() && why.isEmpty()) // a refused key cannot remove anything
-		api->del("/v1/rtmp/keys/" + settings.streamKeyId, [](int, const QJsonDocument &, const QString &) {});
+	if (why.isEmpty()) { // a refused key cannot remove anything
+		// A key from Connect signs itself out once the stream key is gone
+		// (POST /v1/connect/revoke). A pasted key is the person's own, kept.
+		const QString oldKey = settings.viaConnect ? settings.apiKey : QString();
+		if (!settings.streamKeyId.isEmpty())
+			api->delQuiet("/v1/rtmp/keys/" + settings.streamKeyId,
+				      [this, oldKey](int, const QJsonDocument &, const QString &) {
+					      api->revoke(oldKey, nullptr);
+				      });
+		else
+			api->revoke(oldKey, nullptr);
+	}
 	const Settings kept = settings;
 	settings = Settings();
 	settings.sendVideo = kept.sendVideo;
@@ -1746,7 +1768,8 @@ void Dock::loadLists()
 void Dock::loadBroadcasts(bool choose)
 {
 	broadcastsLoadedAt = QDateTime::currentMSecsSinceEpoch();
-	api->get("/v1/broadcasts", [this, choose](int, const QJsonDocument &doc, const QString &error) {
+	api->getAll("/v1/broadcasts", "broadcasts",
+		    [this, choose](int, const QJsonDocument &doc, const QString &error) {
 		if (!error.isEmpty()) {
 			obs_log(LOG_WARNING, "broadcasts: %s", error.toUtf8().constData());
 			broadcastsFailed = true;
