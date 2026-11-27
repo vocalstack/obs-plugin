@@ -11,6 +11,7 @@
 
 #include <QCoreApplication>
 #include <QFont>
+#include <QHash>
 #include <QFontMetrics>
 #include <QImage>
 #include <QPainter>
@@ -23,6 +24,7 @@
 #include <QtMath>
 
 #include <atomic>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -432,7 +434,7 @@ static const char *caption_name(void *)
 struct LinkOptions {
 	QString headline;
 	int size = 360;
-	bool showLink = true, showListeners = true, light = false;
+	bool showListeners = true, light = false;
 };
 
 static LinkOptions link_options(obs_data_t *s)
@@ -440,10 +442,24 @@ static LinkOptions link_options(obs_data_t *s)
 	LinkOptions o;
 	o.headline = QString::fromUtf8(obs_data_get_string(s, "headline"));
 	o.size = qBound(120, int(obs_data_get_int(s, "size")), 2000);
-	o.showLink = obs_data_get_bool(s, "show_link");
 	o.showListeners = obs_data_get_bool(s, "show_listeners");
 	o.light = QString::fromUtf8(obs_data_get_string(s, "style")) == QLatin1String("light");
 	return o;
+}
+
+// The VocalStack logo shipped with the plugin: white for a dark card, dark
+// for a light one. Read once.
+static QImage logoImage(bool white)
+{
+	static QImage cache[2];
+	QImage &img = cache[white ? 1 : 0];
+	if (img.isNull()) {
+		char *path = obs_module_file(white ? "logo-white@2x.png" : "logo@2x.png");
+		if (path)
+			img.load(QString::fromUtf8(path));
+		bfree(path);
+	}
+	return img;
 }
 
 class LinkPainter : public Painter {
@@ -463,9 +479,10 @@ public:
 	}
 
 private:
-	// The QR code of `text` drawn into `area`, dark modules on white with
-	// its quiet zone; false when it cannot be encoded.
-	static bool drawQr(QPainter &p, const QRectF &area, const QString &text)
+	// The QR code of `text` on a rounded white plate, centred in `area`:
+	// whole-pixel modules drawn without anti-aliasing, so no seams show
+	// between them; false when it cannot be encoded.
+	static bool drawQr(QPainter &p, const QRect &area, const QString &text, const QColor &ink)
 	{
 		std::vector<uint8_t> qr(qrcodegen_BUFFER_LEN_MAX), temp(qrcodegen_BUFFER_LEN_MAX);
 		if (!qrcodegen_encodeText(text.toUtf8().constData(), temp.data(), qr.data(), qrcodegen_Ecc_MEDIUM,
@@ -473,94 +490,264 @@ private:
 			return false;
 		const int n = qrcodegen_getSize(qr.data());
 		const int quiet = 2;
-		const qreal module = qFloor(area.width() / (n + 2 * quiet));
-		const qreal side = module * (n + 2 * quiet);
-		const QRectF box(area.center().x() - side / 2, area.center().y() - side / 2, side, side);
-		QPainterPath bg;
-		bg.addRoundedRect(box, module * 1.5, module * 1.5);
-		p.fillPath(bg, Qt::white);
-		p.setPen(Qt::NoPen);
-		p.setBrush(QColor(10, 12, 41));
-		for (int y = 0; y < n; y++)
-			for (int x = 0; x < n; x++)
-				if (qrcodegen_getModule(qr.data(), x, y))
-					p.drawRect(QRectF(box.left() + (x + quiet) * module, box.top() + (y + quiet) * module,
-							  module, module));
+		const int module = qMax(1, area.width() / (n + 2 * quiet));
+		const int side = module * (n + 2 * quiet);
+		const QRect box(area.left() + (area.width() - side) / 2, area.top() + (area.height() - side) / 2, side, side);
+		QPainterPath plate;
+		plate.addRoundedRect(QRectF(box), module * 1.5, module * 1.5);
+		p.fillPath(plate, Qt::white);
+		QPainterPath modules;
+		for (int y = 0; y < n; y++) {
+			// Runs of dark modules in a row as one rectangle each.
+			for (int x = 0; x < n;) {
+				if (!qrcodegen_getModule(qr.data(), x, y)) {
+					x++;
+					continue;
+				}
+				int end = x;
+				while (end < n && qrcodegen_getModule(qr.data(), end, y))
+					end++;
+				modules.addRect(box.left() + (x + quiet) * module, box.top() + (y + quiet) * module,
+						(end - x) * module, module);
+				x = end;
+			}
+		}
+		p.save();
+		p.setRenderHint(QPainter::Antialiasing, false);
+		p.fillPath(modules, ink);
+		p.restore();
 		return true;
 	}
 
+	// The QR code next to a phone showing what it opens: a language picked,
+	// live captions in it, and the translation to listen to. Above them the
+	// VocalStack logo (and, while live, how many are listening) and the
+	// headline. The link itself is not written out: its length is the
+	// person's, and the code carries it.
 	void paint()
 	{
 		SceneHub *hub = SceneHub::instance();
 		const QString url = hub->broadcastUrl();
-		const int s = opt.size;
-		const int pad = qMax(8, s / 12);
-		QFont head;
-		head.setPixelSize(qMax(10, s / 11));
-		head.setBold(true);
-		QFont small;
-		small.setPixelSize(qMax(9, s / 16));
-		const QFontMetrics hm(head), sm(small);
-		const int width = s + pad * 2;
-		int height = pad + s + pad;
-		if (!opt.headline.isEmpty())
-			height += hm.lineSpacing() + pad / 2;
-		if (opt.showLink)
-			height += sm.lineSpacing() + pad / 3;
-		if (opt.showListeners)
-			height += sm.lineSpacing() + pad / 3;
+		const qreal S = opt.size;
+		const bool light = opt.light;
 
-		const QColor card = opt.light ? QColor(255, 255, 255) : QColor(10, 12, 41);
-		const QColor fg = opt.light ? QColor(10, 12, 41) : QColor(255, 255, 255);
-		const QColor muted = opt.light ? QColor(90, 96, 120) : QColor(190, 196, 220);
+		const QColor card = light ? QColor(0xFF, 0xFF, 0xFF) : QColor(0x0A, 0x0C, 0x29);
+		const QColor fg = light ? QColor(0x0A, 0x0C, 0x29) : QColor(0xFF, 0xFF, 0xFF);
+		const QColor muted = light ? QColor(0x5A, 0x60, 0x78) : QColor(0xBE, 0xC4, 0xDC);
+		const QColor panel = light ? QColor(0xEE, 0xF0, 0xF6) : QColor(0x1B, 0x1F, 0x4A);
+		const QColor line = light ? QColor(0xD5, 0xD9, 0xE6) : QColor(0x34, 0x3A, 0x75);
+		const QColor coral = light ? QColor(0xE0, 0x53, 0x3C) : QColor(0xEC, 0x63, 0x4D);
+		const QColor screen(0xF4, 0xF5, 0xFA);
+		const QColor ink(0x0A, 0x0C, 0x29);
 
-		QImage img(width, height, QImage::Format_ARGB32_Premultiplied);
+		const qreal pad = S / 12, gap = 0.075 * S, phoneW = 0.5 * S, logoH = S / 9;
+		const qreal W = 2 * pad + S + gap + phoneW;
+
+		auto font = [](qreal px, QFont::Weight weight) {
+			QFont f;
+			f.setPixelSize(qMax(1, qRound(px)));
+			f.setWeight(weight);
+			return f;
+		};
+		const QFont headFont = font(qMax<qreal>(10, 0.08 * S), QFont::Bold);
+		const QFontMetricsF hm(headFont);
+		// The headline wraps to two lines at most; the card never widens.
+		const qreal headW = W - 2 * pad;
+		const bool twoLines = !opt.headline.isEmpty() && hm.horizontalAdvance(opt.headline) > headW;
+		qreal bodyY = opt.headline.isEmpty() ? pad + logoH + 0.07 * S : pad + logoH + 0.22 * S;
+		if (twoLines)
+			bodyY += hm.lineSpacing();
+		const qreal H = bodyY + S + pad;
+
+		QImage img(qCeil(W), qCeil(H), QImage::Format_ARGB32_Premultiplied);
 		img.fill(Qt::transparent);
 		QPainter p(&img);
 		p.setRenderHint(QPainter::Antialiasing);
 		p.setRenderHint(QPainter::TextAntialiasing);
-		QPainterPath bg;
-		bg.addRoundedRect(QRectF(0, 0, width, height), pad, pad);
-		p.fillPath(bg, card);
+		p.setRenderHint(QPainter::SmoothPixmapTransform);
 
-		int y = pad;
+		// 1. The card.
+		QPainterPath cardPath;
+		cardPath.addRoundedRect(QRectF(0, 0, W, H), pad, pad);
+		p.fillPath(cardPath, card);
+
+		// 2. The logo, and how many are listening.
+		const QImage logo = logoImage(!light);
+		if (!logo.isNull())
+			p.drawImage(QRectF(pad, pad, logoH * logo.width() / logo.height(), logoH), logo);
+		const int n = hub->listeners();
+		if (opt.showListeners && n >= 0 && !url.isEmpty()) {
+			const QString text = QString::fromUtf8(n == 1 ? T("VocalStack.Source.OneListening")
+								      : T("VocalStack.Source.Listening"))
+						     .arg(n);
+			const QFont countFont = font(qMax<qreal>(9, 0.045 * S), QFont::DemiBold);
+			const qreal h = 0.085 * S;
+			const qreal w = 0.0425 * S + 0.056 * S + QFontMetricsF(countFont).horizontalAdvance(text) + 0.038 * S;
+			const QRectF pill(W - pad - w, pad + logoH / 2 - h / 2, w, h);
+			QPainterPath pp;
+			pp.addRoundedRect(pill, h / 2, h / 2);
+			p.fillPath(pp, panel);
+			const QPointF dot(pill.left() + 0.0425 * S, pill.center().y());
+			p.setPen(Qt::NoPen);
+			QColor halo = coral;
+			halo.setAlpha(0x47);
+			p.setBrush(halo);
+			p.drawEllipse(dot, 0.026 * S, 0.026 * S);
+			p.setBrush(coral);
+			p.drawEllipse(dot, 0.013 * S, 0.013 * S);
+			p.setFont(countFont);
+			p.setPen(fg);
+			p.drawText(QRectF(dot.x() + 0.056 * S, pill.top(), w, h), Qt::AlignLeft | Qt::AlignVCenter, text);
+		}
+
+		// 3. The headline.
 		if (!opt.headline.isEmpty()) {
-			p.setFont(head);
+			p.setFont(headFont);
 			p.setPen(fg);
-			p.drawText(QRect(pad, y, s, hm.lineSpacing()), Qt::AlignCenter,
-				   hm.elidedText(opt.headline, Qt::ElideRight, s));
-			y += hm.lineSpacing() + pad / 2;
-		}
-		const QRectF qrArea(pad, y, s, s);
-		if (url.isEmpty() || !drawQr(p, qrArea, url)) {
-			QPainterPath empty;
-			empty.addRoundedRect(qrArea, pad / 2.0, pad / 2.0);
-			p.fillPath(empty, opt.light ? QColor(236, 238, 245) : QColor(30, 34, 70));
-			p.setFont(small);
-			p.setPen(muted);
-			p.drawText(qrArea.adjusted(pad, pad, -pad, -pad), Qt::AlignCenter | Qt::TextWordWrap,
-				   QString::fromUtf8(T("VocalStack.Source.NoBroadcast")));
-		}
-		y += s + pad / 2;
-		p.setFont(small);
-		if (opt.showLink) {
-			const QString bare = QString(url).remove(QRegularExpression("^https?://"));
-			p.setPen(fg);
-			p.drawText(QRect(pad, y, s, sm.lineSpacing()), Qt::AlignCenter, sm.elidedText(bare, Qt::ElideMiddle, s));
-			y += sm.lineSpacing() + pad / 3;
-		}
-		if (opt.showListeners) {
-			const int n = hub->listeners();
-			if (n >= 0 && !url.isEmpty()) {
-				p.setPen(muted);
-				const QString text = QString::fromUtf8(n == 1 ? T("VocalStack.Source.OneListening")
-									      : T("VocalStack.Source.Listening"))
-							     .arg(n);
-				p.drawText(QRect(pad, y, s, sm.lineSpacing()), Qt::AlignCenter, text);
+			const QRectF r(pad, pad + logoH + 0.04 * S, headW, 0.14 * S + (twoLines ? hm.lineSpacing() : 0));
+			if (!twoLines) {
+				p.drawText(r, Qt::AlignLeft | Qt::AlignVCenter, opt.headline);
+			} else {
+				// Two lines at most, the end of the second elided.
+				QStringList words = opt.headline.split(' ', Qt::SkipEmptyParts);
+				QString first;
+				while (!words.isEmpty()) {
+					const QString next = first.isEmpty() ? words.first() : first + ' ' + words.first();
+					if (!first.isEmpty() && hm.horizontalAdvance(next) > headW)
+						break;
+					first = next;
+					words.removeFirst();
+				}
+				const QString second = hm.elidedText(words.join(' '), Qt::ElideRight, headW);
+				const qreal top = r.center().y() - hm.lineSpacing();
+				p.drawText(QRectF(pad, top, headW, hm.lineSpacing()), Qt::AlignLeft | Qt::AlignVCenter,
+					   hm.elidedText(first, Qt::ElideRight, headW));
+				p.drawText(QRectF(pad, top + hm.lineSpacing(), headW, hm.lineSpacing()),
+					   Qt::AlignLeft | Qt::AlignVCenter, second);
 			}
 		}
+
+		// 4. The code, or where it will be.
+		const QRect qrArea(qRound(pad), qRound(bodyY), qRound(S), qRound(S));
+		if (!url.isEmpty() && drawQr(p, qrArea, url, ink)) {
+			if (light) {
+				const qreal w = qMax<qreal>(1.0, 0.0055 * S);
+				const int module = qMax(1, qrArea.width() / (qrcodegenSize(url) + 4));
+				const int side = module * (qrcodegenSize(url) + 4);
+				const QRectF plate(qrArea.left() + (qrArea.width() - side) / 2, qrArea.top() + (qrArea.height() - side) / 2,
+						   side, side);
+				p.setPen(QPen(line, w));
+				p.setBrush(Qt::NoBrush);
+				p.drawRoundedRect(plate.adjusted(w / 2, w / 2, -w / 2, -w / 2), module * 1.5, module * 1.5);
+			}
+		} else {
+			const qreal w = 0.006 * S;
+			const QRectF slot = QRectF(qrArea).adjusted(w / 2, w / 2, -w / 2, -w / 2);
+			QPen dash(line, w);
+			dash.setDashPattern({5.0, 3.33});
+			p.setPen(dash);
+			p.setBrush(panel);
+			p.drawRoundedRect(slot, 0.04 * S, 0.04 * S);
+			p.setFont(font(qMax<qreal>(9, 0.05 * S), QFont::Medium));
+			p.setPen(muted);
+			p.drawText(QRectF(qrArea).adjusted(0.1 * S, 0.1 * S, -0.1 * S, -0.1 * S), Qt::AlignCenter | Qt::TextWordWrap,
+				   QString::fromUtf8(T("VocalStack.Source.NoBroadcast")));
+		}
+
+		// 5. The chevron from the code to the phone.
+		{
+			const qreal cx = pad + S + gap / 2, cy = bodyY + S / 2;
+			p.setPen(QPen(coral, 0.012 * S, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+			p.setBrush(Qt::NoBrush);
+			const QPointF pts[3] = {{cx - 0.011 * S, cy - 0.022 * S}, {cx + 0.011 * S, cy}, {cx - 0.011 * S, cy + 0.022 * S}};
+			p.drawPolyline(pts, 3);
+		}
+
+		// 6. The phone.
+		const qreal px = pad + S + gap, py = bodyY;
+		{
+			const qreal sw = 0.008 * S;
+			p.setPen(QPen(line, sw));
+			p.setBrush(panel);
+			p.drawRoundedRect(QRectF(px, py, phoneW, S).adjusted(sw / 2, sw / 2, -sw / 2, -sw / 2), 0.075 * S, 0.075 * S);
+		}
+		const qreal sx = px + 0.022 * S, sy = py + 0.022 * S, sW = 0.456 * S, sH = 0.956 * S;
+		p.setPen(Qt::NoPen);
+		p.setBrush(screen);
+		p.drawRoundedRect(QRectF(sx, sy, sW, sH), 0.055 * S, 0.055 * S);
+		p.setBrush(ink);
+		p.drawRoundedRect(QRectF(px + 0.19 * S, sy + 0.022 * S, 0.12 * S, 0.026 * S), 0.013 * S, 0.013 * S);
+
+		// What the phone shows: a language other than OBS's own.
+		const bool french = QString::fromUtf8(obs_get_locale()).startsWith(QLatin1String("es"));
+		const QString langName = french ? QStringLiteral("Français") : QStringLiteral("Español");
+		const QString earlier = french ? QStringLiteral("Bienvenue !") : QStringLiteral("¡Bienvenidos!");
+		const QStringList live = french ? QStringList{QStringLiteral("Aujourd'hui je"), QStringLiteral("vous montre la"),
+							       QStringLiteral("scène dans OBS")}
+						: QStringList{QStringLiteral("Hoy os enseño"), QStringLiteral("cómo montar la"),
+							      QStringLiteral("escena en OBS")};
+
+		const qreal m = 0.04 * S;
+		const qreal lx = sx + m, ly = sy + 0.085 * S;
+		p.setBrush(coral);
+		p.drawRoundedRect(QRectF(lx, ly, 0.27 * S, 0.075 * S), 0.0375 * S, 0.0375 * S);
+		p.setFont(font(0.043 * S, QFont::Bold));
+		p.setPen(Qt::white);
+		p.drawText(QRectF(lx + 0.035 * S, ly, 0.27 * S, 0.075 * S), Qt::AlignLeft | Qt::AlignVCenter, langName);
+		{
+			const qreal cx = lx + 0.228 * S, cy = ly + 0.0375 * S;
+			p.setPen(QPen(Qt::white, 0.008 * S, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+			const QPointF pts[3] = {{cx - 0.012 * S, cy - 0.006 * S}, {cx, cy + 0.006 * S}, {cx + 0.012 * S, cy - 0.006 * S}};
+			p.drawPolyline(pts, 3);
+		}
+
+		const qreal ah = 0.105 * S, ay = sy + sH - 0.03 * S - ah;
+		const qreal T0 = (ly + 0.075 * S + ay) / 2 - 0.1375 * S;
+		const qreal rowW = sW - 2 * m, rowH = 0.065 * S;
+		QColor faded = ink;
+		faded.setAlpha(0x61);
+		p.setFont(font(0.05 * S, QFont::DemiBold));
+		p.setPen(faded);
+		p.drawText(QRectF(sx + m, T0, rowW, rowH), Qt::AlignLeft | Qt::AlignVCenter, earlier);
+		p.setFont(font(0.05 * S, QFont::Bold));
+		p.setPen(ink);
+		for (int i = 0; i < live.size(); i++)
+			p.drawText(QRectF(sx + m, T0 + 0.080 * S + i * 0.065 * S, rowW, rowH), Qt::AlignLeft | Qt::AlignVCenter, live[i]);
+		p.setPen(Qt::NoPen);
+		p.setBrush(coral);
+		p.drawRoundedRect(QRectF(sx + m, T0 + 0.275 * S, 0.09 * S, 0.012 * S), 0.006 * S, 0.006 * S);
+
+		// The audio bar: play, and a waveform like the bars in the logo's V.
+		p.setBrush(ink);
+		p.drawRoundedRect(QRectF(sx + 0.024 * S, ay, sW - 0.048 * S, ah), ah / 2, ah / 2);
+		const QPointF play(sx + 0.024 * S + ah / 2, ay + ah / 2);
+		p.setBrush(coral);
+		p.drawEllipse(play, 0.0378 * S, 0.0378 * S);
+		const qreal tr = 0.0189 * S;
+		const QPointF tri[3] = {{play.x() - 0.6 * tr, play.y() - tr}, {play.x() + tr, play.y()}, {play.x() - 0.6 * tr, play.y() + tr}};
+		p.setBrush(Qt::white);
+		p.drawPolygon(tri, 3);
+		static const qreal bars[] = {0.025, 0.045, 0.060, 0.035, 0.050, 0.030, 0.042, 0.022};
+		const qreal bw = 0.014 * S;
+		for (int i = 0; i < 8; i++) {
+			const qreal h = bars[i] * S;
+			p.drawRoundedRect(QRectF(play.x() + 0.0378 * S + 0.03 * S + i * 0.026 * S, play.y() - h / 2, bw, h), bw / 2,
+					  bw / 2);
+		}
+
 		p.end();
 		publish(img);
+	}
+
+	// The QR code's size in modules for `text`, as drawQr encodes it; 0
+	// when it cannot be encoded.
+	static int qrcodegenSize(const QString &text)
+	{
+		std::vector<uint8_t> qr(qrcodegen_BUFFER_LEN_MAX), temp(qrcodegen_BUFFER_LEN_MAX);
+		if (!qrcodegen_encodeText(text.toUtf8().constData(), temp.data(), qr.data(), qrcodegen_Ecc_MEDIUM,
+					  qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX, qrcodegen_Mask_AUTO, true))
+			return 0;
+		return qrcodegen_getSize(qr.data());
 	}
 
 	LinkOptions opt;
@@ -583,8 +770,8 @@ static void *link_create(obs_data_t *settings, obs_source_t *source)
 	d->source = source;
 	make_painter<LinkPainter>(d);
 	const int s = qBound(120, int(obs_data_get_int(settings, "size")), 2000);
-	d->frame->cx = uint32_t(s + 2 * qMax(8, s / 12));
-	d->frame->cy = uint32_t(s * 3 / 2);
+	d->frame->cx = uint32_t(s * 1.75);
+	d->frame->cy = uint32_t(s * 1.5);
 	link_update(d, settings);
 	return d;
 }
@@ -593,7 +780,6 @@ static void link_defaults(obs_data_t *s)
 {
 	obs_data_set_default_string(s, "headline", T("VocalStack.Source.DefaultHeadline"));
 	obs_data_set_default_int(s, "size", 360);
-	obs_data_set_default_bool(s, "show_link", true);
 	obs_data_set_default_bool(s, "show_listeners", true);
 	obs_data_set_default_string(s, "style", "dark");
 }
@@ -607,7 +793,6 @@ static obs_properties_t *link_properties(void *)
 							OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(style, T("VocalStack.Source.Dark"), "dark");
 	obs_property_list_add_string(style, T("VocalStack.Source.Light"), "light");
-	obs_properties_add_bool(props, "show_link", T("VocalStack.Source.ShowLink"));
 	obs_properties_add_bool(props, "show_listeners", T("VocalStack.Source.ShowListeners"));
 	obs_properties_add_text(props, "note", T("VocalStack.Source.LinkNote"), OBS_TEXT_INFO);
 	return props;
