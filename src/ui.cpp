@@ -76,16 +76,16 @@ QLabel[role="dot"][level="error"] { color: ERROR; }
 QLabel[role="dot"][level="dim"] { color: rgba(LIVERGB,110); }
 
 QPushButton[role="primary"] {
-	background: PRIMARY; color: PRIMARYTEXT; border: 2px solid transparent; border-radius: 8px;
-	font-weight: 600; min-height: 36px; padding: 0 14px;
+	background: PRIMARY; color: PRIMARYTEXT; border: 2px solid PRIMARY; border-radius: 8px;
+	font-weight: 600; min-height: 32px; padding: 0 14px;
 }
-QPushButton[role="primary"]:hover { background: PRIMARYHOVER; }
-QPushButton[role="primary"]:pressed { background: #1f5280; }
+QPushButton[role="primary"]:hover { background: PRIMARYHOVER; border-color: PRIMARYHOVER; }
+QPushButton[role="primary"]:pressed { background: #1f5280; border-color: #1f5280; }
 QPushButton[role="primary"]:focus { border-color: rgba(BRANDRGB,210); }
-QPushButton[role="primary"]:disabled { background: rgba(FGRGB,18); color: MUTED; }
+QPushButton[role="primary"]:disabled { background: rgba(FGRGB,18); border-color: transparent; color: MUTED; }
 QPushButton[role="danger"] {
 	background: rgba(LIVERGB,56); color: LIVE; border: 2px solid rgba(LIVERGB,140);
-	border-radius: 8px; font-weight: 600; min-height: 36px; padding: 0 14px;
+	border-radius: 8px; font-weight: 600; min-height: 32px; padding: 0 14px;
 }
 QPushButton[role="danger"]:hover { background: rgba(LIVERGB,82); }
 QPushButton[role="danger"]:pressed { background: rgba(LIVERGB,110); }
@@ -126,9 +126,9 @@ QFrame[role="callout"] { border: none; border-radius: 6px; border-left: 3px soli
 QFrame[role="callout"][tone="warn"] { border-left-color: WARN; background: rgba(WARNRGB,31); }
 QFrame[role="callout"][tone="error"] { border-left-color: ERROR; background: rgba(ERRORRGB,31); }
 
-QFrame[role="segmented"] { background: rgba(FGRGB,13); border: 1px solid rgba(FGRGB,26); border-radius: 18px; }
+QFrame[role="segmented"] { background: rgba(FGRGB,13); border: 1px solid rgba(FGRGB,26); border-radius: 16px; }
 QFrame[role="segmented"] QPushButton {
-	border: 2px solid transparent; border-radius: 14px; padding: 0 12px; background: transparent;
+	border: 2px solid transparent; border-radius: 13px; padding: 0 12px; background: transparent;
 }
 QFrame[role="segmented"] QPushButton:hover { background: rgba(FGRGB,13); }
 QFrame[role="segmented"] QPushButton:pressed { background: rgba(FGRGB,20); }
@@ -179,7 +179,7 @@ QLabel *eyebrow(const QString &text, QWidget *parent)
 	QFont f = l->font();
 	f.setPointSizeF(f.pointSizeF() * 0.78);
 	f.setCapitalization(QFont::AllUppercase);
-	f.setLetterSpacing(QFont::AbsoluteSpacing, 1.5);
+	f.setLetterSpacing(QFont::AbsoluteSpacing, 0.8);
 	f.setWeight(QFont::Medium);
 	l->setFont(f);
 	return l;
@@ -212,8 +212,10 @@ QWidget *field(QVBoxLayout *into, const QString &label, QWidget *control, QWidge
 	v->setSpacing(GAP_LABEL);
 	v->addWidget(eyebrow(label));
 	v->addWidget(control);
-	if (note)
+	if (note) {
+		v->addSpacing(4); // 8 px under its control, which it belongs to
 		v->addWidget(note);
+	}
 	into->addWidget(block);
 	return block;
 }
@@ -265,11 +267,13 @@ Segmented::Segmented(QWidget *parent) : QFrame(parent), group(new QButtonGroup(t
 	setProperty("role", "segmented");
 	group->setExclusive(true);
 	auto *h = new QHBoxLayout(this);
-	h->setContentsMargins(3, 3, 3, 3);
+	h->setContentsMargins(2, 2, 2, 2);
 	h->setSpacing(0);
 	connect(group, &QButtonGroup::buttonClicked, this,
 		[this](QAbstractButton *b) { emit changed(b->property("value")); });
-	setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+	// As wide as the field, its options sharing it equally, so every control
+	// on a page ends at the same right edge.
+	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 }
 
 void Segmented::addOption(const QString &label, const QVariant &value, const QString &tip)
@@ -279,13 +283,13 @@ void Segmented::addOption(const QString &label, const QVariant &value, const QSt
 	b->setCheckable(true);
 	b->setCursor(Qt::PointingHandCursor);
 	b->setProperty("value", value);
-	b->setFixedHeight(28);
+	b->setFixedHeight(26); // 32 with the frame: as tall as the lists and Start
 	// As wide as its bold (selected) label, so it never clips.
 	QFont bold = b->font();
 	bold.setWeight(QFont::DemiBold);
 	b->setMinimumWidth(QFontMetrics(bold).horizontalAdvance(label) + 2 * 12 + 8);
 	group->addButton(b);
-	layout()->addWidget(b);
+	static_cast<QHBoxLayout *>(layout())->addWidget(b, 1);
 	if (group->buttons().size() == 1)
 		b->setChecked(true);
 }

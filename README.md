@@ -27,6 +27,16 @@ Read more about the [VocalStack live transcription plugin for OBS Studio](https:
 - **Captions** over the preview name the speaker once more than one has been heard, follow corrections
   made in the dashboard, and fall back to the spoken language when VocalStack refuses a translation (a
   transcription has at most ten languages).
+- **Captions in the stream** (Settings → Captions → In your stream, off by default): CEA-608 closed captions in
+  OBS's own stream, spoken or translated, which viewers turn on with Twitch's and YouTube's CC button.
+- **Audio track** (Settings → Transcription): send one of OBS's six audio tracks, such as a microphone-only
+  track, so game audio and music stay out of the transcript.
+- **Scene sources**: *VocalStack Captions* (live captions in any language, styled as you like) and *VocalStack
+  Broadcast Link* (a QR code of the broadcast link, and how many are listening). Unlike the preview overlay,
+  these go into the stream and recordings.
+- **Subtitles beside recordings** (Settings → Recordings): when an OBS recording stops, `<recording>.srt` (and
+  `.vtt`, and a translated `<recording>.<lang>.srt` if chosen) is saved next to it, timed to the recording.
+- **Copy for YouTube**: the last transcription's title, summary and chapters, ready for a video description.
 
 ## Download
 

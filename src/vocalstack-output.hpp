@@ -16,7 +16,8 @@ public:
 	explicit VocalStackOutput(QObject *parent = nullptr);
 	~VocalStackOutput() override;
 
-	bool start(const QString &serverUrl, const QString &streamKey, bool video);
+	// `track`: OBS's audio track (mixer) to send, 1 to 6.
+	bool start(const QString &serverUrl, const QString &streamKey, bool video, int track);
 	void stop();
 	bool active() const;
 

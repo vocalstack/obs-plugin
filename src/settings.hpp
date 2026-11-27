@@ -41,6 +41,17 @@ struct Settings {
 	// VocalStack last said (GET /v1/realtime/capabilities); 0: unknown.
 	int maxDurationS = 0;
 	bool sendVideo = false;
+	// OBS's audio track (mixer) sent to VocalStack, 1 to 6: a track with
+	// only the microphone keeps game audio and music out of the transcript.
+	int audioTrack = 1;
+	// Closed captions in OBS's own stream (CEA-608), and their language
+	// (empty: as spoken).
+	bool streamCaptions = false;
+	QString streamCaptionLanguage;
+	// Subtitle files beside each OBS recording: "off", "srt" or "srt+vtt";
+	// and a translated file too, in this language (empty: none).
+	QString subtitles = "srt";
+	QString subtitleLanguage;
 	bool followObs = true;
 	// Install a newer release when one is out and nothing is being
 	// transcribed (else the dock offers it).

@@ -2,7 +2,11 @@
 
 #include "api.hpp"
 #include "caption-overlay.hpp"
+#include "caption-feeds.hpp"
 #include "connect-login.hpp"
+#include "scene-sources.hpp"
+#include "stream-captions.hpp"
+#include "subtitles.hpp"
 #include "transcript-panel.hpp"
 #include "ui.hpp"
 #include "updater.hpp"
@@ -11,14 +15,17 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <plugin-support.h>
+#include <util/config-file.h>
 
 #include <QClipboard>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDockWidget>
 #include <QEvent>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -40,6 +47,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QUuid>
 #include <QVBoxLayout>
 
@@ -57,6 +65,8 @@ static const char *PLUGIN_PAGE = "https://vocalstack.com/obs-studio-transcriptio
 // Items of the broadcast list that are not broadcasts.
 static const char *NEW_BROADCAST = "__new__";
 static const char *LOADING = "__loading__";
+// The stream captions list's first item.
+static const char *STREAM_CC_OFF = "__off__";
 // The list is asked for again when it opens, at most this often.
 static const qint64 BROADCASTS_FRESH_MS = 10000;
 // Below this width the two transcript buttons stack.
@@ -136,6 +146,14 @@ Dock::Dock(QWidget *parent)
 	  updater(new Updater(api, this)),
 	  pages(new QStackedWidget(this))
 {
+	// The scene's caption sources and the stream's captions take theirs
+	// from the session's feeds.
+	SceneHub::instance()->setFeeds(session->captionFeeds());
+	streamCaptions = new StreamCaptions(session->captionFeeds(), this);
+	streamCaptions->configure(settings.streamCaptions, settings.streamCaptionLanguage);
+	subtitles = new RecordingSubtitles(api, &settings, this);
+	connect(session, &Session::live, subtitles, &RecordingSubtitles::transcriptionLive);
+	connect(session, &Session::ended, subtitles, &RecordingSubtitles::transcriptionEnded);
 	auto *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(ui::MARGIN, ui::MARGIN, ui::MARGIN, ui::MARGIN);
 	layout->setSpacing(0);
@@ -167,6 +185,7 @@ Dock::Dock(QWidget *parent)
 	pages->addWidget(buildSettings());
 	pages->addWidget(buildSignedIn());
 	pages->addWidget(buildBroadcastEditor());
+	fillLanguageBoxes();
 	applyTheme();
 	ui::tabFocusOnly(this);
 
@@ -208,6 +227,7 @@ Dock::Dock(QWidget *parent)
 		updateLiveSummary();
 	});
 	connect(session, &Session::listeners, this, [this](int n) {
+		SceneHub::instance()->setListeners(n);
 		liveListeners->setVisible(n >= 0);
 		liveListeners->setText(tr("%n listening", nullptr, qMax(0, n)));
 	});
@@ -228,9 +248,45 @@ Dock::Dock(QWidget *parent)
 		},
 		[this]() { return settings.spokenLanguage; }, this);
 
+	connect(subtitles, &RecordingSubtitles::saved, this, [this](const QStringList &paths) {
+		QStringList names;
+		for (const QString &p : paths)
+			names << QFileInfo(p).fileName();
+		showIdleNote(tr("Subtitles saved beside the recording: %1").arg(names.join(QStringLiteral(", "))));
+	});
+	connect(subtitles, &RecordingSubtitles::failed, this,
+		[this](const QString &error) { onStatus(error, Session::Level::Warn); });
+
 	api->setKey(settings.apiKey);
 	showSignedIn(!settings.apiKey.isEmpty(), false);
 	onState(session->state());
+}
+
+void Dock::recordingChanged(Recording r)
+{
+	switch (r) {
+	case Recording::Started:
+		subtitles->recordingStarted();
+		break;
+	case Recording::Stopped:
+		subtitles->recordingStopped();
+		break;
+	case Recording::Paused:
+		subtitles->recordingPaused(true);
+		break;
+	case Recording::Resumed:
+		subtitles->recordingPaused(false);
+		break;
+	}
+}
+
+void Dock::showIdleNote(const QString &text)
+{
+	if (session->state() != Session::State::Idle)
+		return;
+	idleStatus->setText(text.toHtmlEscaped());
+	set_level(idleStatus, "");
+	idleStatus->setVisible(!text.isEmpty());
 }
 
 // One stylesheet for the dock, from the theme OBS is in; again, with the
@@ -241,7 +297,7 @@ void Dock::applyTheme()
 	darkTheme = theme.dark;
 	setStyleSheet(theme.stylesheet());
 	logoLabel->setPixmap(logo_pixmap(theme.dark));
-	followHint->setText(tr("Starts when OBS starts streaming or recording · %1")
+	followHint->setText(tr("Or it starts by itself when you go live or record. %1")
 				    .arg(anchor(this, "settings", tr("Change"))));
 	joinLabel->setText(tr("No account? %1").arg(anchor(this, "join", tr("Create one free"))));
 	if (edLinkNote->text().contains("<a "))
@@ -483,6 +539,7 @@ QWidget *Dock::buildSignedIn()
 	bv->addLayout(linkRow);
 	// While live, in place of the fields that cannot change.
 	liveSummary = ui::muted();
+	liveSummary->setWordWrap(true);
 	liveSummary->hide();
 	bv->addWidget(liveSummary);
 	v->addLayout(bv);
@@ -558,14 +615,22 @@ QWidget *Dock::buildSignedIn()
 			lastCustomLanguage = lang;
 	});
 	spokenMode->installEventFilter(this);
-	auto *spokenRow = new QWidget;
-	auto *sh = new QHBoxLayout(spokenRow);
-	sh->setContentsMargins(0, 0, 0, 0);
-	sh->setSpacing(8);
-	sh->addWidget(spokenMode);
-	sh->addWidget(spokenBox);
-	sh->addStretch(1);
-	spokenBlock = ui::field(v, tr("Spoken language"), spokenRow);
+	// Side by side, or the chip under the switch when the dock is too narrow
+	// for both.
+	spokenRow = new QWidget;
+	spokenLayout = new QBoxLayout(QBoxLayout::LeftToRight, spokenRow);
+	spokenLayout->setContentsMargins(0, 0, 0, 0);
+	spokenLayout->setSpacing(8);
+	spokenLayout->addWidget(spokenMode, 1);
+	spokenLayout->addWidget(spokenBox, 0, Qt::AlignLeft);
+	spokenRow->installEventFilter(this);
+	// Spoken language, Send and Audio track: hidden while live.
+	inputBlock = new QWidget;
+	auto *iv = new QVBoxLayout(inputBlock);
+	iv->setContentsMargins(0, 0, 0, 0);
+	iv->setSpacing(0);
+	v->addWidget(inputBlock);
+	spokenBlock = ui::field(iv, tr("Spoken language"), spokenRow);
 	spokenBlock->layout()->setContentsMargins(0, GAP_FIELD, 0, 0);
 
 	sendSwitch = new ui::Segmented;
@@ -575,15 +640,68 @@ QWidget *Dock::buildSignedIn()
 	connect(sendSwitch, &ui::Segmented::changed, this, [this](const QVariant &value) {
 		settings.sendVideo = value.toBool();
 		settings.save();
+		updateLiveSummary();
 	});
-	sendBlock = ui::field(v, tr("Send"), sendSwitch);
+	sendBlock = ui::field(iv, tr("Send"), sendSwitch);
 	sendBlock->layout()->setContentsMargins(0, GAP_FIELD, 0, 0);
-	v->addSpacing(GAP_SECTION);
 
+	// Which of OBS's audio tracks: a microphone-only one keeps game audio
+	// and music out of the transcript. Names as OBS's settings have them,
+	// read again each time the list opens.
+	audioTrackBox = new ui::ReloadingCombo;
+	fillAudioTracks();
+	connect(audioTrackBox, &ui::ReloadingCombo::aboutToShowPopup, this, &Dock::fillAudioTracks);
+	connect(audioTrackBox, &QComboBox::activated, this, [this](int index) {
+		settings.audioTrack = audioTrackBox->itemData(index).toInt();
+		settings.save();
+		audioHint->setVisible(settings.audioTrack == 1);
+		updateLiveSummary();
+	});
+	audioTrackBox->setToolTip(tr("The OBS audio track sent to VocalStack. A track with only your microphone keeps "
+				     "game audio and music out of the transcript."));
+	// Only while Track 1, where everything is mixed, is chosen.
+	audioHint = ui::muted(tr("Track 1 mixes every source. To send only your mic, give it its own track in Edit → "
+				 "Advanced Audio Properties."));
+	audioHint->setVisible(settings.audioTrack == 1);
+	audioBlock = ui::field(iv, tr("Audio track"), audioTrackBox, audioHint);
+	audioBlock->layout()->setContentsMargins(0, GAP_FIELD, 0, 0);
+
+	// Closed captions in OBS's own stream: off, or in a language. Can
+	// change while live.
+	// Type to find a language: any part of its name matches.
+	streamLangBox = new QComboBox;
+	streamLangBox->setEditable(true);
+	streamLangBox->setInsertPolicy(QComboBox::NoInsert);
+	streamLangBox->completer()->setCompletionMode(QCompleter::PopupCompletion);
+	streamLangBox->completer()->setFilterMode(Qt::MatchContains);
+	streamLangBox->completer()->setCaseSensitivity(Qt::CaseInsensitive);
+	streamLangBox->lineEdit()->setPlaceholderText(tr("Type a language…"));
+	streamLangBox->setToolTip(tr("Closed captions in your stream, which viewers turn on with the CC button on "
+				     "Twitch and YouTube."));
+	// Typed text that names no language goes back to the choice in use.
+	connect(streamLangBox->lineEdit(), &QLineEdit::editingFinished, this, [this]() {
+		if (streamLangBox->findText(streamLangBox->currentText(), Qt::MatchFixedString) < 0)
+			fillLanguageBoxes();
+	});
+	connect(streamLangBox, &QComboBox::activated, this, [this]() {
+		const QString choice = streamLangBox->currentData().toString();
+		settings.streamCaptions = choice != QLatin1String(STREAM_CC_OFF);
+		if (settings.streamCaptions)
+			settings.streamCaptionLanguage = choice;
+		settings.save();
+		streamCaptions->configure(settings.streamCaptions, settings.streamCaptionLanguage);
+	});
+	auto *ccBlock = ui::field(v, tr("Stream captions (CC)"), streamLangBox);
+	ccBlock->layout()->setContentsMargins(0, GAP_FIELD, 0, 0);
+	// Start, well clear of the form above it.
+	v->addSpacing(40);
+	auto *action = new QVBoxLayout;
+	action->setContentsMargins(0, 0, 0, 0);
+	action->setSpacing(0);
 	startButton = new QPushButton(tr("Start transcribing"));
 	startButton->setProperty("role", "primary");
 	connect(startButton, &QPushButton::clicked, this, &Dock::toggle);
-	v->addWidget(startButton);
+	action->addWidget(startButton);
 	stopSpin = new QTimer(this);
 	stopSpin->setInterval(90);
 	connect(stopSpin, &QTimer::timeout, this, [this]() {
@@ -593,13 +711,19 @@ QWidget *Dock::buildSignedIn()
 	});
 
 	// Under Start: whichever of these is showing, 10 px below it.
+	auto *actionNotes = new QVBoxLayout;
+	actionNotes->setContentsMargins(0, 8, 0, 0);
+	actionNotes->setSpacing(8);
+	action->addLayout(actionNotes);
+	v->addLayout(action);
+	// In the page: the live card and VocalStack's notices.
 	auto *under = new QVBoxLayout;
-	under->setContentsMargins(0, 10, 0, 0);
+	under->setContentsMargins(0, GAP_SECTION, 0, 0);
 	under->setSpacing(8);
 	followHint = ui::muted();
 	followHint->setTextFormat(Qt::RichText);
 	connect(followHint, &QLabel::linkActivated, this, [this]() { pages->setCurrentIndex(SettingsPage); });
-	under->addWidget(followHint);
+	actionNotes->addWidget(followHint);
 	idleStatus = new QLabel;
 	idleStatus->setWordWrap(true);
 	idleStatus->setTextFormat(Qt::RichText);
@@ -612,7 +736,7 @@ QWidget *Dock::buildSignedIn()
 		}
 	});
 	idleStatus->hide();
-	under->addWidget(idleStatus);
+	actionNotes->addWidget(idleStatus);
 
 	// While live: a card under Stop.
 	auto *card = new QFrame;
@@ -710,6 +834,12 @@ QWidget *Dock::buildSignedIn()
 	transcriptButtons->addWidget(openButton, 1);
 	transcriptButtons->addWidget(copyLinkButton, 1);
 	tv->addLayout(transcriptButtons);
+	youtubeButton = new QPushButton(tr("Copy for YouTube"));
+	youtubeButton->setProperty("role", "secondary");
+	youtubeButton->setToolTip(tr("Copy the title, summary and chapters, for a video's description. Chapter times "
+				     "count from the start of the transcription."));
+	connect(youtubeButton, &QPushButton::clicked, this, &Dock::copyForYouTube);
+	tv->addWidget(youtubeButton);
 	v->addWidget(transcriptBlock);
 	v->addStretch(1);
 	pv->addWidget(scrolling(content), 1);
@@ -897,7 +1027,7 @@ QWidget *Dock::buildSettings()
 	sp->addLayoutRow(spBlock);
 
 	// Captions over the preview.
-	auto *cc = section(tr("Captions"));
+	auto *cc = section(tr("Preview captions"));
 	auto *colorControls = new QWidget;
 	auto *colorRow = new QHBoxLayout(colorControls);
 	colorRow->setContentsMargins(0, 0, 0, 0);
@@ -927,6 +1057,42 @@ QWidget *Dock::buildSettings()
 				  colorControls));
 	showCaptionColor();
 
+	// Subtitles beside OBS's recordings.
+	auto *rc = section(tr("Recordings"));
+	subtitlesSwitch = new ui::Segmented;
+	subtitlesSwitch->addOption(tr("Off"), "off");
+	subtitlesSwitch->addOption(tr("SRT"), "srt");
+	subtitlesSwitch->addOption(tr("SRT + VTT"), "srt+vtt");
+	subtitlesSwitch->setValue(settings.subtitles.isEmpty() ? "off" : settings.subtitles);
+	subtitleLangBox = new QComboBox;
+	connect(subtitlesSwitch, &ui::Segmented::changed, this, [this](const QVariant &value) {
+		settings.subtitles = value.toString();
+		settings.save();
+		subtitleLangBox->setEnabled(settings.subtitles != "off");
+	});
+	connect(subtitleLangBox, &QComboBox::activated, this, [this]() {
+		settings.subtitleLanguage = subtitleLangBox->currentData().toString();
+		settings.save();
+	});
+	auto *subBlock = new QVBoxLayout;
+	subBlock->setSpacing(6);
+	subBlock->addWidget(new QLabel(tr("Subtitles beside recordings")));
+	subBlock->addWidget(subtitlesSwitch);
+	subBlock->addWidget(ui::muted(tr("When an OBS recording stops, a subtitle file with the same name is saved "
+					 "next to it, timed to the recording.")));
+	rc->addLayoutRow(subBlock);
+	rc->addRow(ui::settingRow(tr("Also translated into"), QString(), subtitleLangBox));
+
+	// The plugin's sources.
+	auto *sc = section(tr("In your scene"));
+	auto *sceneNote = ui::muted(tr("Add these from the + under Sources. Unlike the preview captions, they show "
+				       "in your stream and recordings.<br><br><b>VocalStack Captions</b>: live captions, in "
+				       "the language you pick, styled as you like.<br><b>VocalStack Broadcast Link</b>: a QR "
+				       "code of the broadcast link, and how many are listening."));
+	sceneNote->setTextFormat(Qt::RichText);
+	sceneNote->setWordWrap(true);
+	sc->addRow(sceneNote);
+
 	// Behaviour.
 	auto *be = section(tr("Behaviour"));
 	followBox = new ui::Switch;
@@ -946,6 +1112,8 @@ QWidget *Dock::buildSettings()
 	});
 	be->addRow(ui::settingRow(tr("Update automatically"), tr("Installs while idle; restart OBS to use it."),
 				  autoUpdateBox));
+
+	subtitleLangBox->setEnabled(settings.subtitles != "off");
 
 	// Version.
 	auto *ab = section(tr("About"));
@@ -1094,11 +1262,13 @@ void Dock::showNotices(const QStringList &warnings, const QStringList &errors)
 		add(note, "warn");
 }
 
-// While live: the choices that cannot change, in one line.
+// The spoken language, what is sent and the audio track, in one line.
 void Dock::updateLiveSummary()
 {
 	const QString lang = spokenBox->currentData().toString().isEmpty() ? tr("Auto detect") : spokenBox->currentText();
 	QString text = QStringLiteral("%1 · %2").arg(lang, settings.sendVideo ? tr("Audio + video") : tr("Audio only"));
+	if (settings.audioTrack != 1)
+		text += QStringLiteral(" · ") + tr("Track %1").arg(settings.audioTrack);
 	if (!session->followingScript().isEmpty())
 		text += QStringLiteral(" · ") + tr("Following the script");
 	liveSummary->setText(text);
@@ -1145,8 +1315,7 @@ void Dock::onState(Session::State s)
 	captionsToggle->setChecked(settings.showCaptions);
 
 	// While live, the fields that cannot change give way to a summary.
-	spokenBlock->setVisible(idle);
-	sendBlock->setVisible(idle);
+	inputBlock->setVisible(idle);
 	scriptBlock->setVisible(idle && !scripts.isEmpty());
 	// The script just recorded is no longer offered.
 	if (idle && !settings.broadcastId.isEmpty())
@@ -1208,6 +1377,7 @@ void Dock::updateLinks()
 	const bool idle = session->state() == Session::State::Idle;
 	transcriptBlock->setVisible(!settings.transcriptionId.isEmpty());
 	transcriptEyebrow->setVisible(idle);
+	youtubeButton->setVisible(idle);
 	transcriptEyebrow->setText(lastDurationS >= 0 ? tr("Last transcript · %1").arg(duration_text(lastDurationS))
 						      : tr("Last transcript"));
 	const bool chosen = broadcastObjects.contains(settings.broadcastId);
@@ -1253,6 +1423,83 @@ void Dock::copyTranscriptLink()
 			  QGuiApplication::clipboard()->setText(url);
 			  ui::flash(copyLinkButton, tr("✓ Link copied"));
 		  });
+}
+
+// The title, summary and chapters of the last transcription, as a video
+// description wants them.
+void Dock::copyForYouTube()
+{
+	const QString id = settings.transcriptionId;
+	if (id.isEmpty())
+		return;
+	youtubeButton->setEnabled(false);
+	api->get("/v1/transcriptions/" + id + "/summary", [this, id](int, const QJsonDocument &sdoc, const QString &) {
+		const QJsonObject summary = sdoc.object();
+		const bool ready = summary.value("state").toString() == "ready";
+		api->get("/v1/transcriptions/" + id + "/transcript",
+			 [this, summary, ready](int, const QJsonDocument &doc, const QString &error) {
+				 youtubeButton->setEnabled(true);
+				 if (!error.isEmpty()) {
+					 onStatus(tr("Couldn't read the transcript: %1").arg(error), Session::Level::Error);
+					 return;
+				 }
+				 const QString text = youtube_text(ready ? summary.value("title").toString() : QString(),
+								   ready ? summary.value("summary").toString() : QString(),
+								   transcript_cues(doc.object(), QString()));
+				 if (text.isEmpty()) {
+					 ui::flash(youtubeButton, tr("Nothing to copy yet"), 2500);
+					 return;
+				 }
+				 QGuiApplication::clipboard()->setText(text);
+				 const QString state = summary.value("state").toString();
+				 ui::flash(youtubeButton,
+					   state == "pending" ? tr("✓ Copied · summary not ready yet") : tr("✓ Copied"), 2500);
+			 });
+	});
+}
+
+// "As spoken" / "None", then every language VocalStack translates into;
+// the saved choice stays in the list while it is not loaded.
+void Dock::fillLanguageBoxes()
+{
+	auto fill = [this](QComboBox *box, const QString &first, const QString &current) {
+		const QSignalBlocker quiet(box);
+		box->clear();
+		box->addItem(first, QString());
+		for (const auto &[name, code] : translationLanguages)
+			box->addItem(name, code);
+		if (!current.isEmpty() && box->findData(current) < 0)
+			box->addItem(current, current);
+		box->setCurrentIndex(qMax(0, box->findData(current)));
+	};
+	{
+		const QSignalBlocker quiet(streamLangBox);
+		streamLangBox->clear();
+		streamLangBox->addItem(tr("Off"), QString::fromLatin1(STREAM_CC_OFF));
+		streamLangBox->addItem(tr("As spoken"), QString());
+		for (const auto &[name, code] : translationLanguages)
+			streamLangBox->addItem(name, code);
+		const QString lang = settings.streamCaptionLanguage;
+		if (!lang.isEmpty() && streamLangBox->findData(lang) < 0)
+			streamLangBox->addItem(lang, lang);
+		const QString current = settings.streamCaptions ? lang : QString::fromLatin1(STREAM_CC_OFF);
+		streamLangBox->setCurrentIndex(qMax(0, streamLangBox->findData(current)));
+	}
+	fill(subtitleLangBox, tr("None"), settings.subtitleLanguage);
+}
+
+void Dock::fillAudioTracks()
+{
+	const QSignalBlocker quiet(audioTrackBox);
+	audioTrackBox->clear();
+	config_t *profile = obs_frontend_get_profile_config();
+	for (int i = 1; i <= MAX_AUDIO_MIXES; i++) {
+		const QString key = QStringLiteral("Track%1Name").arg(i);
+		const char *name = profile ? config_get_string(profile, "AdvOut", key.toUtf8().constData()) : nullptr;
+		const QString n = QString::fromUtf8(name ? name : "").trimmed();
+		audioTrackBox->addItem(n.isEmpty() ? tr("Track %1").arg(i) : tr("Track %1 · %2").arg(i).arg(n), i);
+	}
+	audioTrackBox->setCurrentIndex(qMax(0, audioTrackBox->findData(settings.audioTrack)));
 }
 
 // ---------------------------------------------------------------- updates
@@ -1700,6 +1947,12 @@ void Dock::signOut(const QString &why)
 	settings.latencyMode = kept.latencyMode;
 	settings.autoUpdate = kept.autoUpdate;
 	settings.transcriptionName = kept.transcriptionName;
+	settings.audioTrack = kept.audioTrack;
+	settings.streamCaptions = kept.streamCaptions;
+	settings.streamCaptionLanguage = kept.streamCaptionLanguage;
+	settings.subtitles = kept.subtitles;
+	settings.subtitleLanguage = kept.subtitleLanguage;
+	settings.captionBackground = kept.captionBackground;
 	settings.showCaptions = true;
 	broadcastObjects.clear();
 	broadcastOrder.clear();
@@ -1757,6 +2010,12 @@ void Dock::loadLists()
 		std::sort(spokenLanguages.begin(), spokenLanguages.end());
 		for (const auto &[name, code] : spokenLanguages)
 			spokenBox->addItem(name, code);
+		translationLanguages.clear();
+		for (const QJsonValue c : o.value("translation").toArray())
+			translationLanguages.append({names.value(c.toString(), c.toString()), c.toString()});
+		std::sort(translationLanguages.begin(), translationLanguages.end());
+		SceneHub::instance()->setTranslationLanguages(translationLanguages);
+		fillLanguageBoxes();
 		spokenBox->setCurrentIndex(qMax(0, spokenBox->findData(settings.spokenLanguage)));
 		updateLiveSummary();
 	});
@@ -1971,6 +2230,10 @@ void Dock::fillBroadcasts()
 // none, with what to do about it.
 void Dock::showBroadcastLink()
 {
+	{
+		const QJsonObject b = broadcastObjects.value(settings.broadcastId);
+		SceneHub::instance()->setBroadcast(b.value("shareUrl").toString(), b.value("access").toString() == "private");
+	}
 	auto say = [this](const QString &text, const char *level, const QString &action) {
 		broadcastLink->setFullText(text);
 		set_level(broadcastLink, level);
@@ -2420,6 +2683,15 @@ bool Dock::eventFilter(QObject *watched, QEvent *event)
 	if (watched == broadcastBox) {
 		if (event->type() == QEvent::Resize || event->type() == QEvent::Show)
 			editBroadcastButton->setFixedHeight(broadcastBox->height());
+		return QWidget::eventFilter(watched, event);
+	}
+	if (watched == spokenRow) {
+		if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
+			const int both = spokenMode->minimumSizeHint().width() + spokenLayout->spacing() +
+					 spokenBox->sizeHint().width();
+			spokenLayout->setDirection(spokenRow->width() < both ? QBoxLayout::TopToBottom
+									    : QBoxLayout::LeftToRight);
+		}
 		return QWidget::eventFilter(watched, event);
 	}
 	// The language chip as tall as Auto detect / Custom beside it.

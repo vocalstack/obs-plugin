@@ -10,8 +10,6 @@
 #include <QUrlQuery>
 #include <QUuid>
 
-// A caption stays this long after the last words.
-static const int CAPTION_HOLD_MS = 8000;
 // A feed that closed is opened again after 3 s, then 6, 12… up to a
 // minute while it keeps closing; at once when the server closed it to
 // restart (1012: a relay draining for a deploy), where the same
@@ -43,6 +41,7 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 	: QObject(parent),
 	  api(api_),
 	  settings(settings_),
+	  feeds(api_),
 	  resubscribeMs(RESUBSCRIBE_MS),
 	  reopenEventsMs(RESUBSCRIBE_MS)
 {
@@ -70,7 +69,7 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 		if (st != State::Live || output.active())
 			return;
 		obs_log(LOG_INFO, "starting the stream to VocalStack again");
-		if (!output.start(settings->serverUrl, settings->streamKey, settings->sendVideo))
+		if (!output.start(settings->serverUrl, settings->streamKey, settings->sendVideo, settings->audioTrack))
 			streamLost(QString()); // OBS would not even start it: try again shortly
 	});
 	connect(&output, &VocalStackOutput::stopped, this, [this](const QString &error, bool keyRefused, bool lost) {
@@ -112,6 +111,7 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 			// languages it may): captions as spoken instead, at once.
 			settings->captionLanguage.clear();
 			settings->save();
+			overlayTrack.setLanguage(QString());
 			emit captionLanguageRefused(reason);
 			resubscribe.start(0);
 			return;
@@ -158,9 +158,7 @@ Session::Session(Api *api_, Settings *settings_, QObject *parent)
 			openEvents();
 	});
 
-	captionClear.setSingleShot(true);
-	captionClear.setInterval(CAPTION_HOLD_MS);
-	connect(&captionClear, &QTimer::timeout, this, &Session::clearCaption);
+	connect(&overlayTrack, &CaptionTrack::caption, this, &Session::caption);
 
 	// Whether VocalStack hears the stream, while the event feed is not
 	// there to say so.
@@ -186,7 +184,7 @@ void Session::start()
 	setNotes(QString(), QString());
 	emit status(tr("Connecting…"), Session::Level::Warn);
 	ensureStreamKey([this]() {
-		if (!output.start(settings->serverUrl, settings->streamKey, settings->sendVideo))
+		if (!output.start(settings->serverUrl, settings->streamKey, settings->sendVideo, settings->audioTrack))
 			failStart(tr("OBS could not start the stream to VocalStack (see the OBS log)"));
 		// Next: the output's started signal.
 	});
@@ -474,16 +472,16 @@ void Session::startTranscription(bool takeover)
 			  liveId = t.value("id").toString(settings->transcriptionId);
 			  followedScript = t.value("scriptId").toString();
 			  scriptId.clear();
-			  lastSeq = -1;
 			  readyCursor = -1;
 			  eventsReopened = revokedChecked = false;
-			  sentences = false;
 			  resuming = false;
 			  speakers.clear();
 			  inSentence.clear();
+			  overlayTrack.reset();
+			  overlayTrack.setLanguage(settings->captionLanguage);
 			  emit transcriptCleared();
 			  emitSpeakers();
-			  shownSpeaker = -1;
+			  liveSinceMs = QDateTime::currentMSecsSinceEpoch();
 			  resubscribeMs = reopenEventsMs = RESUBSCRIBE_MS;
 			  setState(State::Live);
 			  if (scriptRefused)
@@ -496,6 +494,9 @@ void Session::startTranscription(bool takeover)
 			  openEvents();
 			  if (settings->showCaptions)
 				  subscribe();
+			  feeds.start(liveId);
+			  wentLive = liveId;
+			  emit live(liveId, liveSinceMs);
 			  if (!settings->broadcastId.isEmpty()) {
 				  broadcastPoll.start();
 				  pollBroadcast();
@@ -523,12 +524,15 @@ void Session::end(const QString &error)
 	reopenEvents.stop();
 	feed.close();
 	events.close();
-	captionClear.stop();
-	clearCaption();
+	overlayTrack.clear();
+	feeds.stop();
 	output.stop();
 	emit listeners(-1);
 
 	auto done = [this, error]() {
+		if (!wentLive.isEmpty())
+			emit ended(wentLive);
+		wentLive.clear();
 		liveId.clear();
 		followedScript.clear();
 		setState(State::Idle);
@@ -588,23 +592,12 @@ void Session::setCaptionLanguage(const QString &lang)
 {
 	settings->captionLanguage = lang;
 	settings->save();
+	overlayTrack.setLanguage(lang);
 	if (st == State::Live && settings->showCaptions && !feed.isOpen())
 		subscribe();
 	else if (feed.isOpen())
 		feed.sendText(QString::fromUtf8(
 			QJsonDocument(QJsonObject{{"type", "subscribe.update"}, {"lang", lang}}).toJson(QJsonDocument::Compact)));
-}
-
-// The words to show from a row: its translation in the caption language
-// when one is chosen and has come, else what was said.
-static QString shown(const QJsonObject &row, const QString &lang)
-{
-	if (!lang.isEmpty()) {
-		const QString t = row.value("translations").toObject().value(lang).toString();
-		if (!t.isEmpty())
-			return t;
-	}
-	return row.value("text").toString();
 }
 
 static QList<qint64> seqsOf(const QJsonValue &v)
@@ -630,14 +623,16 @@ QString Session::speakerLabel(int speaker) const
 	return s.name.isEmpty() ? tr("Speaker %1").arg(s.number) : s.name;
 }
 
+// The caption over the preview is overlayTrack's; this is the rest: the
+// transcript panel, speakers, notes and the transcription's state.
 void Session::onFrame(const QString &text)
 {
 	const QJsonObject f = QJsonDocument::fromJson(text.toUtf8()).object();
 	const QString type = f.value("type").toString();
-	const QString lang = settings->captionLanguage;
 	// A feed opened again replays what was sent before its cursor.
 	if (f.value("cursor").isDouble() && f.value("cursor").toInteger() <= readyCursor)
 		return;
+	overlayTrack.onFrame(f);
 	if (type == "subscribe.ready") {
 		readyCursor = f.value("lastSeq").toInteger(-1);
 		const QString s = f.value("state").toString();
@@ -647,31 +642,19 @@ void Session::onFrame(const QString &text)
 		}
 	} else if (type == "transcript.committed") {
 		const QJsonObject seg = f.value("segment").toObject();
-		lastSeq = seg.value("seq").toInteger(lastSeq);
-		if (!inSentence.contains(lastSeq))
-			emit transcriptLine(QStringLiteral("r:%1").arg(lastSeq), seg.value("start").toDouble(-1),
-					    speakerOf(seg), seg.value("text").toString());
-		// Shown the moment it is heard, as the dashboard does; the sentence
-		// it belongs to takes its place when it comes. A translated
-		// caption waits for its translation.
-		if (lang.isEmpty() || seg.value("translations").toObject().contains(lang))
-			showCaption(shown(seg, lang), {lastSeq}, speakerOf(seg));
-	} else if (type == "transcript.translated" && !lang.isEmpty()) {
-		const qint64 seq = f.value("seq").toInteger(-1);
-		if (!sentences && seq == lastSeq)
-			showCaption(f.value("translations").toObject().value(lang).toString(), {seq}, shownSpeaker);
+		const qint64 seq = seg.value("seq").toInteger(-1);
+		if (!inSentence.contains(seq))
+			emit transcriptLine(QStringLiteral("r:%1").arg(seq), seg.value("start").toDouble(-1), speakerOf(seg),
+					    seg.value("text").toString());
 	} else if (type == "transcript.sentence") {
-		// Sent again as the sentence grows and when its translation comes.
-		sentences = true;
 		const QJsonObject sentence = f.value("sentence").toObject();
 		const QString id = QStringLiteral("s:%1").arg(sentence.value("sentenceId").toInteger());
 		if (sentence.value("status").toString() == "dropped") {
 			emit transcriptRemoved({id});
 			return;
 		}
-		const QList<qint64> seqs = seqsOf(sentence.value("seqs"));
 		QStringList rows;
-		for (qint64 q : seqs)
+		for (qint64 q : seqsOf(sentence.value("seqs")))
 			if (!inSentence.contains(q)) {
 				inSentence.insert(q);
 				rows.append(QStringLiteral("r:%1").arg(q));
@@ -680,22 +663,12 @@ void Session::onFrame(const QString &text)
 			emit transcriptRemoved(rows);
 		emit transcriptLine(id, sentence.value("start").toDouble(-1), speakerOf(sentence),
 				    sentence.value("text").toString());
-		// The caption follows the sentence that holds the newest row; an
-		// older one, finished late, does not pull the caption back.
-		if (seqs.contains(lastSeq) &&
-		    (lang.isEmpty() || sentence.value("translations").toObject().contains(lang)))
-			showCaption(shown(sentence, lang), seqs, speakerOf(sentence));
 	} else if (type == "transcript.amended") {
-		// The row on screen, written again. A translated caption waits for
-		// the amend's own translation (transcript.translated, same seq).
 		const qint64 seq = f.value("seq").toInteger(-1);
 		if (!inSentence.contains(seq))
 			emit transcriptLine(QStringLiteral("r:%1").arg(seq), -1,
 					    f.value("speaker").isDouble() ? f.value("speaker").toInt() : -1,
 					    f.value("text").toString());
-		if (lang.isEmpty() && shownSeqs == QList<qint64>{seq})
-			showCaption(f.value("text").toString(), {seq},
-				    f.value("speaker").isDouble() ? f.value("speaker").toInt() : shownSpeaker);
 	} else if (type == "transcript.corrected") {
 		// Somebody corrected a line in the dashboard.
 		const qint64 seq = f.value("seq").toInteger(-1);
@@ -704,35 +677,11 @@ void Session::onFrame(const QString &text)
 					    f.value("sentenceText").toString());
 		else if (!inSentence.contains(seq))
 			emit transcriptLine(QStringLiteral("r:%1").arg(seq), -1, -1, f.value("text").toString());
-		if (lang.isEmpty() && shownSeqs.contains(seq)) {
-			const QString sentenceText = f.value("sentenceText").toString();
-			showCaption(shownSeqs.size() > 1 && !sentenceText.isEmpty() ? sentenceText
-										   : f.value("text").toString(),
-				    shownSeqs, shownSpeaker);
-		}
 	} else if (type == "transcript.retracted") {
-		// Rows taken back (another language than the engine read); the
-		// engine that reads it sends them again.
-		const QList<qint64> seqs = seqsOf(f.value("seqs"));
 		QStringList rows;
-		for (qint64 q : seqs)
+		for (qint64 q : seqsOf(f.value("seqs")))
 			rows.append(QStringLiteral("r:%1").arg(q));
 		emit transcriptRemoved(rows);
-		if (seqs.contains(lastSeq))
-			lastSeq = -1; // its translation, if late, is not shown either
-		for (qint64 seq : seqs)
-			if (shownSeqs.contains(seq)) {
-				captionClear.stop();
-				clearCaption();
-				break;
-			}
-	} else if (type == "transcript.held") {
-		// Rows from here wait until the language is known: no caption
-		// meanwhile (the last one would sit over speech it is not).
-		if (f.value("held").toBool()) {
-			captionClear.stop();
-			clearCaption();
-		}
 	} else if (type == "transcript.speakerNumbers") {
 		// Every speaker's number and name, in full.
 		speakers.clear();
@@ -963,24 +912,6 @@ void Session::emitSpeakers()
 	for (auto it = speakers.cbegin(); it != speakers.cend(); ++it)
 		labels.insert(it.key(), speakerLabel(it.key()));
 	emit speakerLabels(labels);
-}
-
-void Session::showCaption(const QString &words, const QList<qint64> &seqs, int speaker)
-{
-	if (words.isEmpty())
-		return;
-	shownSeqs = seqs;
-	shownSpeaker = speaker;
-	const QString label = speakerLabel(speaker);
-	emit caption(label, words);
-	captionClear.start();
-}
-
-void Session::clearCaption()
-{
-	shownSeqs.clear();
-	shownSpeaker = -1;
-	emit caption(QString(), QString());
 }
 
 void Session::setNotes(const QString &language, const QString &feed)

@@ -23,6 +23,8 @@ class QTimer;
 class QBoxLayout;
 class QToolButton;
 class QVBoxLayout;
+class RecordingSubtitles;
+class StreamCaptions;
 class TranscriptPanel;
 class Updater;
 class WarmPing;
@@ -67,6 +69,9 @@ public:
 	// Start when idle, else stop: the dock's button, and the
 	// "VocalStack: Start/Stop transcribing" hotkey.
 	void toggle();
+	// OBS's recording, for the subtitles written beside it.
+	enum class Recording { Started, Stopped, Paused, Resumed };
+	void recordingChanged(Recording r);
 
 protected:
 	bool eventFilter(QObject *watched, QEvent *event) override;
@@ -110,6 +115,15 @@ private:
 	void copyBroadcastLink();
 	void copyTranscriptLink();
 	void openTranscription();
+	// The last transcription's title, summary and chapters, for a YouTube
+	// description.
+	void copyForYouTube();
+	// The translation languages into the lists that offer them.
+	void fillLanguageBoxes();
+	// The audio tracks as OBS names them (Settings → Output).
+	void fillAudioTracks();
+	// A note under Start while idle, as neither good nor bad.
+	void showIdleNote(const QString &text);
 	void onState(Session::State s);
 	void onStatus(const QString &text, Session::Level level);
 	void showNotices(const QStringList &warnings, const QStringList &errors);
@@ -168,6 +182,10 @@ private:
 	bool broadcastsFailed = false;
 	// The languages a broadcast can be spoken in: (name, code), sorted.
 	QList<QPair<QString, QString>> spokenLanguages;
+	// The languages captions and subtitles can be translated into.
+	QList<QPair<QString, QString>> translationLanguages;
+	StreamCaptions *streamCaptions;
+	RecordingSubtitles *subtitles;
 
 	// Signed out.
 	QPushButton *signInButton;
@@ -191,12 +209,17 @@ private:
 	ui::Segmented *sendSwitch;
 	QPushButton *editBroadcastButton;
 	QToolButton *copyBroadcastButton, *broadcastAction;
-	QWidget *spokenBlock, *sendBlock;
+	QWidget *spokenBlock, *sendBlock, *audioBlock, *inputBlock, *spokenRow;
+	QBoxLayout *spokenLayout;
+	ui::ReloadingCombo *audioTrackBox;
+	QLabel *audioHint;
+	// Captions in OBS's stream: Off, or On in a language.
+	QComboBox *streamLangBox;
 	QLabel *liveSummary;
 	QBoxLayout *transcriptButtons;
 	qint64 lastDurationS = -1;
 	ui::ElidedLabel *broadcastLink;
-	QPushButton *startButton, *openButton, *copyLinkButton;
+	QPushButton *startButton, *openButton, *copyLinkButton, *youtubeButton;
 	QLabel *followHint, *idleStatus;
 	QWidget *transcriptBlock;
 	QLabel *transcriptEyebrow;
@@ -256,6 +279,8 @@ private:
 	QLabel *workspaceNote;
 	QPushButton *changeWorkspaceButton;
 	QToolButton *captionColorButton, *captionColorReset;
+	QComboBox *subtitleLangBox;
+	ui::Segmented *subtitlesSwitch;
 	void showCaptionColor();
 	QLabel *signOutNote;
 	// "Check for updates" was clicked: its answer shows under it.

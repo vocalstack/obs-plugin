@@ -45,18 +45,30 @@ target_sources(
     src/plugin-main.cpp
     src/api.cpp
     src/api.hpp
+    src/caption-feeds.cpp
+    src/caption-feeds.hpp
     src/caption-overlay.cpp
     src/caption-overlay.hpp
+    src/caption-track.cpp
+    src/caption-track.hpp
     src/connect-login.cpp
     src/connect-login.hpp
     src/dock.cpp
     src/dock.hpp
     src/net.cpp
     src/net.hpp
+    src/scene-sources.cpp
+    src/scene-sources.hpp
     src/session.cpp
     src/session.hpp
     src/settings.cpp
     src/settings.hpp
+    src/stream-captions.cpp
+    src/stream-captions.hpp
+    src/subtitles.cpp
+    src/subtitles.hpp
+    src/third_party/qrcodegen/qrcodegen.c
+    src/third_party/qrcodegen/qrcodegen.h
     src/transcript-panel.cpp
     src/transcript-panel.hpp
     src/ui.cpp

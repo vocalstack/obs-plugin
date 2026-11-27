@@ -40,6 +40,8 @@ Settings Settings::load()
 	obs_data_set_default_bool(d, "viaConnect", true);
 	obs_data_set_default_string(d, "speakerLabels", "auto");
 	obs_data_set_default_string(d, "latencyMode", "auto");
+	obs_data_set_default_int(d, "audioTrack", 1);
+	obs_data_set_default_string(d, "subtitles", "srt");
 	s.apiKey = str(d, "apiKey");
 	s.account = str(d, "account");
 	s.viaConnect = obs_data_get_bool(d, "viaConnect");
@@ -62,6 +64,11 @@ Settings Settings::load()
 	s.locked = obs_data_get_bool(d, "locked");
 	s.maxDurationS = int(obs_data_get_int(d, "maxDurationS"));
 	s.sendVideo = obs_data_get_bool(d, "sendVideo");
+	s.audioTrack = qBound(1, int(obs_data_get_int(d, "audioTrack")), 6);
+	s.streamCaptions = obs_data_get_bool(d, "streamCaptions");
+	s.streamCaptionLanguage = str(d, "streamCaptionLanguage");
+	s.subtitles = str(d, "subtitles");
+	s.subtitleLanguage = str(d, "subtitleLanguage");
 	s.followObs = obs_data_get_bool(d, "followObs");
 	s.autoUpdate = obs_data_get_bool(d, "autoUpdate");
 	s.showCaptions = obs_data_get_bool(d, "showCaptions");
@@ -99,6 +106,11 @@ void Settings::save() const
 	obs_data_set_bool(d, "locked", locked);
 	obs_data_set_int(d, "maxDurationS", maxDurationS);
 	obs_data_set_bool(d, "sendVideo", sendVideo);
+	obs_data_set_int(d, "audioTrack", audioTrack);
+	obs_data_set_bool(d, "streamCaptions", streamCaptions);
+	set("streamCaptionLanguage", streamCaptionLanguage);
+	set("subtitles", subtitles);
+	set("subtitleLanguage", subtitleLanguage);
 	obs_data_set_bool(d, "followObs", followObs);
 	obs_data_set_bool(d, "autoUpdate", autoUpdate);
 	obs_data_set_bool(d, "showCaptions", showCaptions);

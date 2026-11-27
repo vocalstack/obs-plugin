@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "caption-overlay.hpp"
 #include "dock.hpp"
+#include "scene-sources.hpp"
 #include "transcript-panel.hpp"
 
 OBS_DECLARE_MODULE()
@@ -67,14 +68,33 @@ static void on_frontend_event(enum obs_frontend_event event, void *)
 		}
 		break;
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
-	case OBS_FRONTEND_EVENT_RECORDING_STARTED:
 		if (dock)
 			dock->obsOutputStarted();
 		break;
+	case OBS_FRONTEND_EVENT_RECORDING_STARTED:
+		if (dock) {
+			// Before the start it may cause: the subtitles' clock begins here.
+			dock->recordingChanged(Dock::Recording::Started);
+			dock->obsOutputStarted();
+		}
+		break;
 	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
-	case OBS_FRONTEND_EVENT_RECORDING_STOPPED:
 		if (dock)
 			dock->obsOutputStopped();
+		break;
+	case OBS_FRONTEND_EVENT_RECORDING_STOPPED:
+		if (dock) {
+			dock->recordingChanged(Dock::Recording::Stopped);
+			dock->obsOutputStopped();
+		}
+		break;
+	case OBS_FRONTEND_EVENT_RECORDING_PAUSED:
+		if (dock)
+			dock->recordingChanged(Dock::Recording::Paused);
+		break;
+	case OBS_FRONTEND_EVENT_RECORDING_UNPAUSED:
+		if (dock)
+			dock->recordingChanged(Dock::Recording::Resumed);
 		break;
 	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
 	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED:
@@ -96,6 +116,8 @@ static void on_frontend_event(enum obs_frontend_event event, void *)
 
 bool obs_module_load(void)
 {
+	// Before the dock, which hands the sources their captions.
+	register_scene_sources();
 	dock = new Dock();
 	if (!obs_frontend_add_dock_by_id("vocalstack", obs_module_text("VocalStack"), dock)) {
 		obs_log(LOG_ERROR, "could not add the VocalStack dock");

@@ -43,7 +43,7 @@ static void video_size(bool video, uint32_t &w, uint32_t &h)
 	h &= ~1u;
 }
 
-bool VocalStackOutput::start(const QString &serverUrl, const QString &streamKey, bool video)
+bool VocalStackOutput::start(const QString &serverUrl, const QString &streamKey, bool video, int track)
 {
 	if (active())
 		return true;
@@ -64,7 +64,8 @@ bool VocalStackOutput::start(const QString &serverUrl, const QString &streamKey,
 
 	OBSDataAutoRelease audioSettings = obs_data_create();
 	obs_data_set_int(audioSettings, "bitrate", 128);
-	audioEncoder = obs_audio_encoder_create("ffmpeg_aac", "vocalstack_audio", audioSettings, 0, nullptr);
+	const size_t mixer = size_t(qBound(1, track, MAX_AUDIO_MIXES) - 1);
+	audioEncoder = obs_audio_encoder_create("ffmpeg_aac", "vocalstack_audio", audioSettings, mixer, nullptr);
 
 	if (!service || !videoEncoder || !audioEncoder) {
 		obs_log(LOG_ERROR, "could not create the VocalStack service or encoders");
@@ -101,7 +102,8 @@ bool VocalStackOutput::start(const QString &serverUrl, const QString &streamKey,
 		obs_log(LOG_ERROR, "the VocalStack output did not start: %s", err ? err : "no reason given");
 		return false;
 	}
-	obs_log(LOG_INFO, "streaming to VocalStack (%s, %ux%u)", video ? "audio and video" : "audio", w, h);
+	obs_log(LOG_INFO, "streaming to VocalStack (%s, %ux%u, audio track %zu)", video ? "audio and video" : "audio", w, h,
+		mixer + 1);
 	return true;
 }
 

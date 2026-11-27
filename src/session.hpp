@@ -1,5 +1,7 @@
 #pragma once
 
+#include "caption-feeds.hpp"
+#include "caption-track.hpp"
 #include "settings.hpp"
 #include "vocalstack-output.hpp"
 #include "websocket.hpp"
@@ -44,6 +46,9 @@ public:
 	// Ask VocalStack the plan's longest live transcription (kept in the
 	// settings); on sign-in, and before each Start.
 	void refreshLimits(std::function<void()> then = {});
+	// Captions in any language while live, for the stream and the scene's
+	// caption sources.
+	CaptionFeeds *captionFeeds() { return &feeds; }
 
 signals:
 	void stateChanged(Session::State state);
@@ -78,6 +83,11 @@ signals:
 	void listeners(int count);
 	// settings->maxDurationS was read from VocalStack.
 	void limitsChanged();
+	// A transcription went live (`sinceMs`: this computer's clock then, its
+	// wall time 0), and the one that went live ended (stopped here or by
+	// VocalStack).
+	void live(const QString &transcriptionId, qint64 sinceMs);
+	void ended(const QString &transcriptionId);
 
 private:
 	using Next = std::function<void()>;
@@ -101,8 +111,6 @@ private:
 	void onFrame(const QString &text);
 	void onEvent(const QString &text);
 	void onIngest(const QJsonObject &f);
-	void showCaption(const QString &words, const QList<qint64> &seqs, int speaker);
-	void clearCaption();
 	void setNotes(const QString &language, const QString &feed);
 	void pollIngest();
 	void pollBroadcast();
@@ -116,7 +124,14 @@ private:
 	// event feed (where the stream's audio stands, the transcription
 	// starting and ending).
 	WebSocket feed, events;
-	QTimer ingestPoll, captionClear, resubscribe, reopenEvents, broadcastPoll;
+	QTimer ingestPoll, resubscribe, reopenEvents, broadcastPoll;
+	// The caption over the preview, in the caption language.
+	CaptionTrack overlayTrack;
+	CaptionFeeds feeds;
+	// The transcription that went live this Start, and when (ms since the
+	// epoch, this computer's clock).
+	QString wentLive;
+	qint64 liveSinceMs = 0;
 	// The stream to VocalStack started again after the network dropped it.
 	QTimer outputRetry;
 	// When the network dropped the stream (ms since the epoch), 0 while
@@ -131,16 +146,9 @@ private:
 	bool remade = false;
 	QString scriptId, followedScript;
 	bool scriptRefused = false;
-	qint64 lastSeq = -1;
 	// The feed's cursor when it was (re)opened: frames at or below it
 	// were seen before, and are not captions again.
 	qint64 readyCursor = -1;
-	// The rows the caption on screen was made from, and who spoke them.
-	QList<qint64> shownSeqs;
-	int shownSpeaker = -1;
-	// The transcription sends sentences (sentences.enabled): the caption is
-	// made from them only, not also from the rows they are made of.
-	bool sentences = false;
 	// Each speaker's display number and name (transcript.speakerNumbers).
 	struct Speaker {
 		int number = 0;
